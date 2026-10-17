@@ -3,7 +3,7 @@ import { h, openSheet, toast, field, segmented, toggle, confirmBox, clear, readF
 import { fleetCounts, pct, vehicleView, vehicleUsable, towedUsable, isNMC, tripsOverlap, vehicleConflicts, VEHICLE_STATUSES } from '../rules.js';
 import { parseGcssRows, parseGcssText, mergeGcss, findGcssHeader } from '../gcss.js';
 import { parseDelimited } from '../csv.js';
-import { readXlsx } from '../xlsxread.js';
+import { readTable } from '../readtable.js';
 import { todayISO, fmtDate, parseDateLoose, daysBetween } from '../util.js';
 import { statusChip, chips, btn, emptyCard } from '../ui.js';
 import { openFormEditorFor } from './form.js';
@@ -77,7 +77,8 @@ export function openImport() {
   openSheet({ title: 'Import GCSS-Army fleet export', tall: true, build: (b, api) => {
     const out = h('div', { 'data-testid': 'import-out' });
     const ta = h('textarea', { rows: 5, placeholder: 'Or paste the exported list here (include the header row)…', 'aria-label': 'Paste GCSS export text', 'data-testid': 'import-paste' });
-    const file = h('input', { type: 'file', accept: '.csv,.txt,.tsv,.xlsx,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'data-testid': 'import-file', 'aria-label': 'Choose GCSS export file' });
+    // No accept attribute on purpose: iOS greys out files whose type it does not map (e.g. old .xls). The file is identified by its content instead.
+    const file = h('input', { type: 'file', 'data-testid': 'import-file', 'aria-label': 'Choose GCSS export file (.xls, .xlsx, .csv, .txt)' });
     const showPreview = () => {
       clear(out); if (!parsed) return;
       const { fleet, report } = mergeGcss(st.fleet, parsed, st.settings, { exportDate });
@@ -106,14 +107,15 @@ export function openImport() {
     file.addEventListener('change', async () => {
       const f = file.files[0]; if (!f) return;
       try {
-        if (/\.xlsx$/i.test(f.name)) { const sheets = await readXlsx(await readFileBytes(f)); const sh = sheets.find((s) => findGcssHeader(s.rows)); if (!sh) throw new Error('No sheet in that workbook has an "Admin No." / "Operational Status" header row. Save the GCSS export as CSV and try again.'); fileName = f.name; parsed = parseGcssRows(sh.rows, st.settings); showPreview(); }
-        else if (/\.xls$/i.test(f.name)) throw new Error('Old .xls files are not supported. In Excel choose Save As > CSV (or .xlsx) and import that.');
-        else readText(await readFileText(f), f.name);
+        const t = await readTable(await readFileBytes(f));
+        if (t.kind === 'text') { readText(t.text, f.name); return; }
+        const sh = t.sheets.find((x) => findGcssHeader(x.rows)); if (!sh) throw new Error('No sheet in that file has an "Admin No." / "Operational Status" header row. Check it is the GCSS-Army equipment list, or save it as CSV and try again.');
+        fileName = f.name; parsed = parseGcssRows(sh.rows, st.settings); showPreview();
       } catch (e) { fail(e); }
     });
     const dt = h('input', { type: 'date', value: exportDate, 'data-testid': 'import-date', onChange: (e) => { exportDate = e.target.value; if (parsed) showPreview(); } });
     b.append(h('p', { class: 'hint' }, 'Columns used: Admin No., Material Description, Model number, Operational Status (FMC / NMCM / NMCS), Equipment, Serial Number, Functional Location, Remark. Re-importing a newer export updates GCSS fields and keeps your notes, locations and NMC-since dates.'),
-      field('Export file (.csv, .xlsx, .txt)', file), field('GCSS export date', dt, 'Used for data age and NMC-since on newly NMC vehicles'), ta,
+      field('Export file (.xls, .xlsx, .csv, .txt)', file), field('GCSS export date', dt, 'Used for data age and NMC-since on newly NMC vehicles'), ta,
       h('button', { class: 'btn wide', type: 'button', 'data-testid': 'import-read', onClick: () => { if (!ta.value.trim()) { fail(new Error('Paste the text first, or choose a file.')); return; } readText(ta.value, 'pasted text'); } }, 'Read pasted text'), out);
   } });
 }

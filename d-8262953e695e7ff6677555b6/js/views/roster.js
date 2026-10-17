@@ -2,7 +2,7 @@ import { S, getCtx, commit, go } from '../ctx.js';
 import { h, openSheet, toast, field, segmented, toggle, confirmBox, clear, readFileText, readFileBytes } from '../dom.js';
 import { gcssIdStats, isActivePerson, licenseState, personLabel, personName, missingGcssId, allQualNames, asOfDate, isActiveTrip, FLAG_FIELDS, tripPeople } from '../rules.js';
 import { parseRosterRows, parseRosterText, applyRoster, rosterToCSV } from '../roster.js';
-import { readXlsx } from '../xlsxread.js';
+import { readTable } from '../readtable.js';
 import { parseDelimited } from '../csv.js';
 import { fmtDate, uid, normKeyText, stampForFile } from '../util.js';
 import { chips, btn, emptyCard, piiNote } from '../ui.js';
@@ -85,7 +85,8 @@ export function openRosterImport() {
   const st = S(); let parsed = null, mode = 'merge';
   openSheet({ title: 'Import roster', tall: true, build: (b, api) => {
     const out = h('div', { 'data-testid': 'rimport-out' });
-    const file = h('input', { type: 'file', accept: '.csv,.txt,.tsv,.xlsx,text/csv,text/plain', 'data-testid': 'rimport-file', 'aria-label': 'Choose roster file' });
+    // No accept attribute on purpose (iOS greys out types it does not map); the file is identified by content.
+    const file = h('input', { type: 'file', 'data-testid': 'rimport-file', 'aria-label': 'Choose roster file (.xls, .xlsx, .csv, .txt)' });
     const ta = h('textarea', { rows: 5, placeholder: 'Or paste CSV / tab-separated rows here (include the header row)…', 'aria-label': 'Paste roster text', 'data-testid': 'rimport-paste' });
     const fail = (e) => { parsed = null; clear(out); out.append(h('div', { class: 'card bad', role: 'alert', 'data-testid': 'rimport-error' }, e.message || String(e))); };
     const preview = () => {
@@ -105,8 +106,8 @@ export function openRosterImport() {
       } }, 'Apply roster import'));
     };
     const run = (rows) => { try { parsed = parseRosterRows(rows, st.settings, { existing: mode === 'merge' ? st.roster : [] }); preview(); } catch (e) { fail(e); } };
-    file.addEventListener('change', async () => { const f = file.files[0]; if (!f) return; try { if (/\.xlsx$/i.test(f.name)) { const sh = await readXlsx(await readFileBytes(f)); run(sh[0].rows); } else run(parseDelimited(await readFileText(f))); } catch (e) { fail(e); } });
+    file.addEventListener('change', async () => { const f = file.files[0]; if (!f) return; try { const t = await readTable(await readFileBytes(f)); if (t.kind === 'text') run(parseDelimited(t.text)); else { const sh = t.sheets.find((x) => x.rows.length > 1) || t.sheets[0]; if (!sh) throw new Error('No sheet with data found in that file.'); run(sh.rows); } } catch (e) { fail(e); } });
     b.append(h('p', { class: 'hint' }, 'Columns: ID, Status, Platoon, Rank, Last name, First name, License Exp, AMMO, HAZMAT, NVD, GCSS ID, then one column per qualification (X = qualified). The ID column should be a local ID (P001), not a DODID/SSN. DODID, SSN and DOB columns are dropped on import and never stored.'), piiNote(),
-      field('Roster file (.csv, .xlsx, .txt)', file), ta, h('button', { class: 'btn wide', type: 'button', 'data-testid': 'rimport-read', onClick: () => { if (!ta.value.trim()) { fail(new Error('Paste the text first, or choose a file.')); return; } run(parseDelimited(ta.value)); } }, 'Read pasted text'), out);
+      field('Roster file (.xls, .xlsx, .csv, .txt)', file), ta, h('button', { class: 'btn wide', type: 'button', 'data-testid': 'rimport-read', onClick: () => { if (!ta.value.trim()) { fail(new Error('Paste the text first, or choose a file.')); return; } run(parseDelimited(ta.value)); } }, 'Read pasted text'), out);
   } });
 }
