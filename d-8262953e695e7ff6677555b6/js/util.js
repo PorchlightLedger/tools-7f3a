@@ -84,3 +84,21 @@ export function truthyMark(v) {
 export function toArrayBufferView(x) { return x instanceof Uint8Array ? x : new Uint8Array(x); }
 export function safeFilePart(s) { return String(s || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'file'; }
 export function stampForFile(now = new Date()) { return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`; }
+
+// ---------- natural / numeric-aware ordering (1, 2, 3a, 10) ----------
+const CHUNK_RE = /(\d+)|(\D+)/g;
+function chunks(s) { const out = []; String(s ?? '').trim().toUpperCase().replace(CHUNK_RE, (m, d, t) => { out.push(d !== undefined ? [1, parseInt(d, 10), d] : [0, t.replace(/^[\s.\-_]+|[\s.\-_]+$/g, '') || t, t]); return m; }); return out; }
+/** Compare two TM item numbers: digit runs numerically, text runs alphabetically; "3" < "3a" < "3b" < "10"; blank items sort last. */
+export function compareItems(a, b) {
+  const A = String(a ?? '').trim(), B = String(b ?? '').trim();
+  if (!A && !B) return 0; if (!A) return 1; if (!B) return -1;
+  const x = chunks(A), y = chunks(B);
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const p = x[i], q = y[i];
+    if (p[0] !== q[0]) return p[0] === 1 ? -1 : 1; // number before text at the same position (A-1 style handled by text first chunk anyway)
+    if (p[0] === 1) { if (p[1] !== q[1]) return p[1] - q[1]; } else { const c = p[1] < q[1] ? -1 : p[1] > q[1] ? 1 : 0; if (c) return c; }
+  }
+  return x.length - y.length;
+}
+/** Stable sort of faults by TM item number (does not mutate). */
+export function sortFaults(faults) { return faults.map((f, i) => [f, i]).sort((p, q) => compareItems(p[0].item, q[0].item) || p[1] - q[1]).map((p) => p[0]); }

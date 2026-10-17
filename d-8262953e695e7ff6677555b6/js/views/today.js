@@ -4,6 +4,7 @@ import { fleetCounts, pct, evaluateTrip, gcssIdStats, isActiveTrip, vehicleView,
 import { daysBetween, fmtDate, todayISO } from '../util.js';
 import { statusChip, resultChip, tripTimes, nameWithId, piiNote, emptyCard, btn } from '../ui.js';
 import { openTripEditor } from './dispatch.js';
+import { chalkSummary, chalkLabel } from '../chalk.js';
 
 export function renderToday(root) {
   const st = S(); const ctx = getCtx(); const c = fleetCounts(ctx); const gi = gcssIdStats(st.roster, st.settings);
@@ -40,8 +41,14 @@ export function renderToday(root) {
   if (!trips.length) sec.append(h('p', { class: 'muted' }, 'No planned or outbound trips.'), btn('New trip', () => go('#dispatch/new'), 'primary'));
   trips.sort((a, b) => (a.t.dateOut || '9').localeCompare(b.t.dateOut || '9') || (a.t.timeOut || '').localeCompare(b.t.timeOut || '')).slice(0, 12).forEach(({ t, ev }) => {
     const v = ctx.fleetByKey.get(t.vehicle); const d = ctx.rosterById.get(t.driver);
-    sec.append(h('button', { class: 'trip-row', type: 'button', onClick: () => openTripEditor(t.id), 'data-testid': 'today-trip' }, h('div', { class: 'tr-top' }, h('b', null, `#${t.chalk || ''} ${v ? v.short : 'no vehicle'}`), h('span', { class: 'chip' }, t.status), resultChip(ev.result)), h('div', { class: 'tr-sub' }, tripTimes(t), ' · ', t.dest || 'no destination'), h('div', { class: 'tr-sub' }, 'Driver: ', nameWithId(d, t.driver)), (ev.blockers.length || ev.warnings.length) ? h('div', { class: 'tr-msg ' + (ev.blockers.length ? 'bad' : 'warn') }, tripSummaryMessage(ev)) : null));
+    sec.append(h('button', { class: 'trip-row', type: 'button', onClick: () => openTripEditor(t.id), 'data-testid': 'today-trip' }, h('div', { class: 'tr-top' }, h('b', null, `#${t.no || ''} ${v ? v.short : 'no vehicle'}`), h('span', { class: 'chip' }, t.status), resultChip(ev.result)), h('div', { class: 'tr-sub' }, tripTimes(t), ' · ', t.dest || 'no destination'), h('div', { class: 'tr-sub' }, 'Driver: ', nameWithId(d, t.driver)), (ev.blockers.length || ev.warnings.length) ? h('div', { class: 'tr-msg ' + (ev.blockers.length ? 'bad' : 'warn') }, tripSummaryMessage(ev)) : null));
   });
   root.append(sec);
+  if (st.chalkPlan.chalks.length) {
+    const sum = chalkSummary(st, ctx); const cs = h('section', { class: 'card', 'data-testid': 'today-chalks' }, h('h3', null, `Chalks (${sum.chalks.length})`));
+    for (const c of sum.chalks) cs.append(h('button', { class: 'trip-row', type: 'button', onClick: () => go('#more/chalk'), 'data-testid': 'today-chalk', 'data-chalk': c.n }, h('div', { class: 'tr-top' }, h('b', null, chalkLabel(st, c.n)), c.warnings.some((w) => w.level !== 'info') ? h('span', { class: 'chip warn' }, `${c.warnings.filter((w) => w.level !== 'info').length} warning(s)`) : null), h('div', { class: 'tr-sub' }, `${c.counts.vehicles} veh · ${c.counts.drivers} drivers · ${c.counts.tcs} TC · ${c.counts.pax} pax`)));
+    if (sum.unassigned.length) cs.append(h('p', { class: 'muted' }, `${sum.unassigned.length} vehicles not on a chalk`));
+    root.append(cs);
+  }
   return 'Today';
 }

@@ -20,7 +20,7 @@ export function emptyState() {
   return {
     schema: SCHEMA, settings: defaultSettings(), roster: [], fleet: [], trips: [], chalkSeq: 0,
     gcss: { exportDate: '', importedAt: '', fileName: '', rows: 0 }, rosterMeta: { importedAt: '' },
-    presets: STARTER_PRESETS.map((p) => ({ ...p })), tmByType: {}, forms: [], ui: { dismissedPii: false, lastLocations: [] },
+    presets: STARTER_PRESETS.map((p) => ({ ...p })), tmByType: {}, tmByModel: {}, chalkPlan: { chalks: [], assign: {} }, forms: [], ui: { dismissedPii: false, lastLocations: [] },
   };
 }
 /** fill in anything missing (older backups / partial files) without losing data */
@@ -36,6 +36,14 @@ export function normalizeState(raw) {
   if (!Array.isArray(s.settings.extraQuals)) s.settings.extraQuals = [];
   s.gcss = { ...base.gcss, ...(s.gcss || {}) }; s.rosterMeta = { ...base.rosterMeta, ...(s.rosterMeta || {}) }; s.ui = { ...base.ui, ...(s.ui || {}) };
   if (!s.tmByType || typeof s.tmByType !== 'object') s.tmByType = {};
+  if (!s.tmByModel || typeof s.tmByModel !== 'object' || Array.isArray(s.tmByModel)) s.tmByModel = {};
+  if (!Array.isArray(s.settings.platoonRules)) s.settings.platoonRules = [];
+  if (typeof s.settings.unitUic !== 'string') s.settings.unitUic = '';
+  const cp = s.chalkPlan && typeof s.chalkPlan === 'object' ? s.chalkPlan : {};
+  s.chalkPlan = { chalks: (Array.isArray(cp.chalks) ? cp.chalks : []).map((c) => (typeof c === 'object' && c ? { n: +c.n, label: String(c.label || '') } : { n: +c, label: '' })).filter((c) => c.n > 0), assign: cp.assign && typeof cp.assign === 'object' && !Array.isArray(cp.assign) ? { ...cp.assign } : {} };
+  // trips: older data used `chalk` as an auto trip counter. It is now the trip number `no`; `chalk` is the planned chalk (or '').
+  for (const t of s.trips) { if (!('no' in t)) { t.no = t.chalk || 0; t.chalk = ''; } if (t.chalk === null || t.chalk === undefined) t.chalk = ''; }
+  for (const f of s.forms) if (f && f.uicOverride === undefined) f.uicOverride = !!String(f.uic || '').trim();
   s.schema = SCHEMA; return s;
 }
 

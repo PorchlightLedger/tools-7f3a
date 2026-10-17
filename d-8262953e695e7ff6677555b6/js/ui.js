@@ -19,3 +19,5 @@ export function chips(options, value, onChange, { label = '' } = {}) {
   return wrap;
 }
 export { personName, fmtDate };
+/** small "Lic no." text next to a driver (operator license number; separate from the GCSS-Army ID) */
+export function licNoBadge(p) { return p && p.licNo ? h('small', { class: 'mono', 'data-testid': 'lic-no' }, ' · Lic ' + p.licNo) : null; }

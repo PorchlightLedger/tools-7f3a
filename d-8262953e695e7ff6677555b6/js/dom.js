@@ -75,11 +75,26 @@ export function typedConfirm({ title, message, word, okText = 'Confirm' }) {
       } });
   });
 }
-export function field(label, input, hint) { return h('label', { class: 'field' }, h('span', { class: 'lbl' }, label), input, hint ? h('small', { class: 'hint' }, hint) : null); }
+/** Labelled form row. Composite controls (segmented / chip groups, any DIV) are NOT wrapped in a <label>: a click on a
+ *  button inside a <label> whose DOM node was replaced during the handler gets re-dispatched by WebKit to the label's first
+ *  control, which is how a choice used to snap back to its first option. Real inputs keep the <label> wrapper. */
+export function field(label, input, hint) {
+  const composite = input && input.nodeType === 1 && !/^(INPUT|SELECT|TEXTAREA)$/.test(input.tagName);
+  const lbl = h('span', { class: 'lbl' }, label);
+  if (composite) { const id = 'fl' + Math.random().toString(36).slice(2, 8); lbl.id = id; input.setAttribute('aria-labelledby', id); return h('div', { class: 'field', role: 'group', 'aria-labelledby': id }, lbl, input, hint ? h('small', { class: 'hint' }, hint) : null); }
+  return h('label', { class: 'field' }, lbl, input, hint ? h('small', { class: 'hint' }, hint) : null);
+}
+/** Segmented choice. Buttons are created ONCE and only their classes change (never re-created inside the click handler). */
 export function segmented(options, value, onChange, { label = '', cls = '' } = {}) {
   const wrap = h('div', { class: 'seg ' + cls, role: 'radiogroup', 'aria-label': label });
-  const draw = (v) => { clear(wrap); options.forEach(([val, text, sub]) => { const b = h('button', { type: 'button', class: 'seg-btn' + (val === v ? ' on' : ''), role: 'radio', 'aria-checked': String(val === v), 'data-val': val, onClick: () => { value = val; draw(val); onChange(val); } }, text, sub ? h('small', null, sub) : null); wrap.append(b); }); };
-  draw(value); wrap.setValue = (v) => { value = v; draw(v); }; return wrap;
+  const btns = new Map();
+  const paint = (v) => { for (const [val, b] of btns) { const on = val === v; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); } };
+  options.forEach(([val, text, sub]) => {
+    const b = h('button', { type: 'button', class: 'seg-btn', role: 'radio', 'aria-checked': 'false', 'data-val': val }, text, sub ? h('small', null, sub) : null);
+    b.addEventListener('click', (e) => { e.stopPropagation(); if (value === val) return; value = val; paint(val); onChange(val); });
+    btns.set(val, b); wrap.append(b);
+  });
+  paint(value); wrap.setValue = (v) => { value = v; paint(v); }; wrap.getValue = () => value; return wrap;
 }
 export function toggle(label, checked, onChange, hint) {
   const input = h('input', { type: 'checkbox', checked, onChange: () => onChange(input.checked) });

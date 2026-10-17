@@ -1,22 +1,27 @@
 import { S, store, commit, go, APP_VERSION, getCtx } from '../ctx.js';
 import { h, openSheet, toast, field, segmented, toggle, confirmBox, typedConfirm, clear, readFileText, closeAllSheets } from '../dom.js';
-import { DEFAULT_MODEL_MAP, DEFAULT_PERSON_STATUSES, normBumper } from '../rules.js';
+import { DEFAULT_MODEL_MAP, DEFAULT_PERSON_STATUSES, normBumper, platoonText, parsePlatoonText, platoonByRules, platoonRuleErrors, shortBumper } from '../rules.js';
+import { exportSettings, parseSettingsJson, applySettings, settingsFileName } from '../settingsio.js';
+import { openTmTable } from './tmedit.js';
 import { makeBackup, parseBackup, backupFileName, shareOrDownload } from '../backup.js';
 import { openExportSheet } from './exporter.js';
 import { renderWalk } from './walk.js';
 import { renderForms, openPresetEditor } from './form.js';
+import { renderChalk } from './chalk.js';
 import { btn, piiNote } from '../ui.js';
 import { clean } from '../util.js';
 
 export function renderMore(root, rest, top) {
   if (rest[0] === 'walk') return renderWalk(root, rest, top);
   if (rest[0] === 'forms') return renderForms(root, rest, top);
+  if (rest[0] === 'chalk') return renderChalk(root, rest, top);
   if (rest[0] === 'settings') { setTimeout(() => { history.replaceState(null, '', '#more'); openSettings(); }, 0); }
   if (rest[0] === 'backup') { setTimeout(() => { history.replaceState(null, '', '#more'); openBackup(); }, 0); }
   const item = (title, sub, onClick, testid) => h('button', { type: 'button', class: 'menu-item', onClick, 'data-testid': testid }, h('span', null, h('b', null, title), h('small', null, sub)), h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'));
   root.append(piiNote(),
     h('div', { class: 'menu' },
       item('Walk-around (motor pool)', 'Tap a vehicle: status, fault notes, location, NMC-since', () => go('#more/walk'), 'menu-walk'),
+      item('Chalk planner', 'Number the chalks, tap vehicles onto them, see crews and warnings', () => go('#more/chalk'), 'menu-chalk'),
       item('DA 5988-E worksheet', 'Pick vehicle, tap status symbols, make a PDF', () => go('#more/forms'), 'menu-forms'),
       item('Share dispatch spreadsheet', 'Build the .xlsx on this phone and send it', () => openExportSheet(), 'menu-export'),
       item('Settings', 'Email recipient, rules, type map, lists', () => openSettings(), 'menu-settings'),
@@ -35,6 +40,7 @@ export function openSettings() {
       field('Recipient email for the dispatch spreadsheet', h('input', { type: 'email', inputmode: 'email', autocomplete: 'off', autocapitalize: 'none', placeholder: 'not set', value: s.recipient, 'data-testid': 's-recipient', onInput: (e) => { s.recipient = e.target.value.trim(); commit({ render: false }); } }), 'Leave blank until known. Used for the mailto fallback; the share sheet lets you pick anyone.'),
       field('Unit name (shown on exports / forms)', h('input', { type: 'text', value: s.unitName, onInput: (e) => { s.unitName = e.target.value; commit({ render: false }); } })),
       field('Default dispatcher', h('input', { type: 'text', value: s.dispatcherDefault, 'data-testid': 's-dispatcher', onInput: (e) => { s.dispatcherDefault = e.target.value; commit({ render: false }); } })));
+    b.append(h('h3', null, 'Unit'), field('Unit UIC (printed on 5988-E worksheets)', h('input', { type: 'text', value: s.unitUic || '', autocomplete: 'off', autocapitalize: 'characters', placeholder: 'blank until you set it', 'data-testid': 's-unitUic', onInput: (e) => { s.unitUic = e.target.value.trim().toUpperCase(); commit({ render: false }); } }), 'Change it any time for a unit move; a worksheet can still override it. The GCSS import offers the most common UIC in the file.'));
     b.append(h('h3', null, 'Dispatch rules'), num('License warning window (days)', 'licenseWindow', 'License expiring within this many days = WARN'),
       sel('TC / A-driver license problem is', 'tcRule', ['WARN', 'BLOCK']), toggle('Warn if TC / A-driver not qualified on the vehicle type', s.tcQualWarn, (v) => { s.tcQualWarn = v; commit({ render: false }); }),
       sel('Trip Out without PMCS marked is', 'pmcsRule', ['WARN', 'BLOCK']), sel('Driver without GCSS-Army ID is', 'gcssIdRule', ['WARN', 'BLOCK', 'OFF'], 'Default WARN (TC without an ID also warns). BLOCK makes the trip NO-GO.'),
@@ -49,6 +55,24 @@ export function openSettings() {
     const map = ta('Type map: GCSS Model number | Type name | Qualification (exact name or NONE) | Vehicle / Towed / Mounted', s.modelMap.map((m) => `${m.model} | ${m.type} | ${m.qual} | ${m.cls}`).join('\n'), 12, 'Every GCSS model must be listed. A blank qualification or an unlisted model makes that vehicle NO-GO (fail closed).', 's-typemap');
     b.append(h('h3', null, 'Lists'), turned.el, pref.el, stat.el, plt.el, xq.el, h('h3', null, 'Type map'), map.el,
       h('div', { class: 'row' }, btn('Reset type map to defaults', async () => { if (await confirmBox({ title: 'Reset type map?', message: 'Replaces your edits with the built-in list.', okText: 'Reset', danger: true })) { map.t.value = DEFAULT_MODEL_MAP.map((m) => `${m.model} | ${m.type} | ${m.qual} | ${m.cls}`).join('\n'); } }), btn('Edit 5988-E fault presets', () => openPresetEditor())));
+    const prules = ta('Platoon rules for vehicles: Platoon name | pattern (first match wins, one per line)', platoonText(s.platoonRules), 6, 'Patterns: num<100, num 100-199, 1000-1999 (number in the bumper) · re:regex · or a wildcard like A-1##* (* any text, # one digit). Blank = no platoons.', 's-platoonRules');
+    const ptest = h('input', { type: 'text', placeholder: 'try a bumper, e.g. A-103X', autocomplete: 'off', autocapitalize: 'characters', 'data-testid': 's-platoon-test', 'aria-label': 'Test a bumper against the platoon rules' }); const pout = h('p', { class: 'hint', 'data-testid': 's-platoon-result' }, '');
+    const upd = () => { const tmp = { platoonRules: parsePlatoonText(prules.t.value) }; const errs = platoonRuleErrors(tmp); const v = ptest.value.trim(); pout.textContent = (errs.length ? 'Rule problem: ' + errs.join('; ') + '. ' : '') + (v ? `${shortBumper(v, s.prefixes, s.unitUic)} → ${platoonByRules(shortBumper(v, s.prefixes, s.unitUic), tmp) || '(no platoon)'}` : ''); };
+    prules.t.addEventListener('input', upd); ptest.addEventListener('input', upd);
+    b.append(h('h3', null, 'Platoons (vehicles)'), prules.el, field('Test', ptest), pout);
+    // settings file: import / export
+    const sfile = h('input', { type: 'file', 'aria-label': 'Choose a settings file (.json)', 'data-testid': 's-import-file' }); const smsg = h('div', { 'data-testid': 's-import-msg' });
+    sfile.addEventListener('change', async () => {
+      const f = sfile.files[0]; if (!f) return; clear(smsg);
+      try { const parsed = parseSettingsJson(await readFileText(f)); if (parsed.problems.length) throw new Error('Cannot import: ' + parsed.problems.join('; '));
+        const keys = Object.keys(parsed.patch); const ok = await confirmBox({ title: 'Import settings?', message: `Settings in this file: ${keys.join(', ') || 'none'}${parsed.ignored.length ? `\nIgnored: ${parsed.ignored.join(', ')}` : ''}\n\nIt replaces those settings here. Your roster, fleet, trips and worksheets are not touched.`, okText: 'Import settings' });
+        if (ok) { const ch = applySettings(st, parsed); commit(); api.close(); toast(`Settings imported (${ch.length} changed)`); setTimeout(() => openSettings(), 50); }
+      } catch (e) { smsg.append(h('div', { class: 'card bad', role: 'alert', 'data-testid': 's-import-error' }, e.message)); }
+      sfile.value = '';
+    });
+    b.append(h('h3', null, 'Settings file'), h('p', { class: 'hint' }, 'A small JSON file with settings only (UIC, platoon rules, lists, type map). No personal data. Use it to set up a second phone or to load a unit preset.'),
+      h('div', { class: 'row' }, btn('Export settings', async () => { const bytes = new TextEncoder().encode(exportSettings(st)); const r = await shareOrDownload(bytes, settingsFileName(), 'application/json', { title: 'Dispatch settings' }); if (r.method !== 'cancelled') toast(r.method === 'share' ? 'Settings shared' : 'Settings saved to Downloads'); }, 'small', { 'data-testid': 's-export' }), btn('TM table', () => openTmTable(), 'small', { 'data-testid': 's-tmtable' })),
+      field('Import settings (.json)', sfile), smsg);
     const err = h('p', { class: 'hint bad', role: 'alert' }); b.append(err);
     api.foot.append(h('button', { class: 'btn', type: 'button', onClick: () => api.close() }, 'Close'), h('button', { class: 'btn primary', type: 'button', 'data-testid': 's-save', onClick: () => {
       try {
@@ -57,6 +81,7 @@ export function openSettings() {
         const sts = lines(stat.t.value).map((l, i) => { const p = l.split('|').map((x) => x.trim()); if (!p[0]) throw new Error(`Status line ${i + 1} is empty`); return { name: p[0], available: /^y/i.test(p[1] || '') }; });
         if (!sts.length) throw new Error('Keep at least one personnel status.');
         s.modelMap = mm; s.statuses = sts; s.platoons = lines(plt.t.value); s.extraQuals = lines(xq.t.value); s.prefixes = lines(pref.t.value).map((x) => x.replace(/\s+/g, '')); s.turnedIn = lines(turned.t.value);
+        { const pr = parsePlatoonText(prules.t.value); const bad = platoonRuleErrors({ platoonRules: pr }); if (bad.length) throw new Error('Platoon rule problem: ' + bad[0]); s.platoonRules = pr; }
         commit(); api.close(); toast('Settings saved');
       } catch (e) { err.textContent = e.message; toast(e.message, 'bad'); }
     } }, 'Save lists'));

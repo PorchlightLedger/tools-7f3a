@@ -50,13 +50,20 @@ export function parseGcssRows(rows, settings) {
     const st = cleanStatus(g(r, 'status'));
     const v = {
       key, bumper, short: shortBumper(bumper, settings.prefixes, uic), uic, desc: clean(g(r, 'desc')), model: clean(g(r, 'model')), gcss: st, asset, serial: clean(g(r, 'serial')),
-      registration: clean(g(r, 'registration')), funcLoc: clean(g(r, 'funcLoc')), gcssDesc: clean(g(r, 'gcssDesc')), userStatus: clean(g(r, 'userStatus')), storageLoc: clean(g(r, 'storageLoc')), remark: clean(g(r, 'remark')), nsn: clean(g(r, 'nsn')),
+      registration: clean(g(r, 'registration')), funcLoc: clean(g(r, 'funcLoc')), gcssDesc: clean(g(r, 'gcssDesc')), userStatus: clean(g(r, 'userStatus')), storageLoc: clean(g(r, 'storageLoc')), remark: clean(g(r, 'remark')), nsn: clean(g(r, 'nsn')), lin: clean(g(r, 'lin')),
     };
     if (!st) issues.blankStatus.push(v.short); else if (!VEHICLE_STATUSES.includes(st)) issues.unrecognizedStatus.push(`${v.short}: ${st}`);
     seenKey.set(key, true); if (asset) seenAsset.set(asset, true); vehicles.push(v);
   }
   if (!vehicles.length) throw new Error('Header found but no vehicle rows below it.');
   return { vehicles, issues, header: map };
+}
+/** fields the user edits by hand; never overwritten by a GCSS import */
+export const USER_FIELDS = ['vinSet', 'linSet', 'platoonSet', 'tmSet'];
+/** most common UIC column value among the parsed vehicles: {uic, count, total, distinct} or null */
+export function commonUic(vehicles) {
+  const c = new Map(); let total = 0; for (const v of vehicles || []) { const u = clean(v.uic); if (!u) continue; total++; c.set(u, (c.get(u) || 0) + 1); }
+  if (!c.size) return null; const [uic, count] = [...c.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]; return { uic, count, total, distinct: c.size };
 }
 export function parseGcssText(text, settings) { return parseGcssRows(parseDelimited(text), settings); }
 
@@ -67,7 +74,7 @@ export function parseGcssText(text, settings) { return parseGcssRows(parseDelimi
 export function mergeGcss(existing, parsed, settings, { exportDate = '', now = new Date() } = {}) {
   const today = todayISO(now); const stamp = parseDateLoose(exportDate) || today;
   const byKey = new Map(existing.map((v) => [v.key, v])); const byAsset = new Map(existing.filter((v) => v.asset).map((v) => [v.asset, v]));
-  const used = new Set(); const out = []; const rep = { total: parsed.vehicles.length, added: [], updated: 0, unchanged: 0, statusChanges: [], missing: [], overridesDiffer: [], overridesResolved: [], xVehicles: [], xButFmc: [], turnedInStill: [], unmapped: [], notDispatchable: 0, issues: parsed.issues };
+  const used = new Set(); const out = []; const rep = { commonUic: commonUic(parsed.vehicles), total: parsed.vehicles.length, added: [], updated: 0, unchanged: 0, statusChanges: [], missing: [], overridesDiffer: [], overridesResolved: [], xVehicles: [], xButFmc: [], turnedInStill: [], unmapped: [], notDispatchable: 0, issues: parsed.issues };
   const lookup = modelLookup(settings); const tk = turnedInKeys(settings);
   for (const nv of parsed.vehicles) {
     let old = byKey.get(nv.key) || (nv.asset && byAsset.get(nv.asset)) || null; if (old && used.has(old.key)) old = null;
@@ -76,6 +83,8 @@ export function mergeGcss(existing, parsed, settings, { exportDate = '', now = n
       used.add(old.key);
       const prevStatus = vehicleStatus(old, settings).status;
       rec = { ...old, ...nv, key: nv.key, notes: old.notes || '', location: old.location || '', nmcSince: old.nmcSince || '', override: old.override || null, walkAt: old.walkAt || '', inExport: true, lastImport: stamp };
+      for (const k of USER_FIELDS) if (old[k] !== undefined) rec[k] = old[k]; // manual VIN / LIN / platoon / TM edits survive a re-import
+      if (!nv.lin && old.lin) rec.lin = old.lin;
       const newStatus = vehicleStatus(rec, settings).status;
       if (rec.override) {
         const o = String(rec.override.status).toUpperCase();
@@ -87,7 +96,7 @@ export function mergeGcss(existing, parsed, settings, { exportDate = '', now = n
         const wasNmc = ['NMCM', 'NMCS', 'NMC-X'].includes(prevStatus), nowNmc = ['NMCM', 'NMCS', 'NMC-X'].includes(st2);
         if (!wasNmc && nowNmc && !rec.nmcSince) { rec.nmcSince = stamp; rec.nmcSinceAuto = true; }
         if (!nowNmc && st2 === 'FMC') { rec.nmcSince = ''; rec.nmcSinceAuto = false; }
-      } else if (newStatus === st2 && JSON.stringify([old.desc, old.model, old.serial, old.funcLoc, old.remark, old.gcss, old.gcssDesc, old.asset]) === JSON.stringify([nv.desc, nv.model, nv.serial, nv.funcLoc, nv.remark, nv.gcss, nv.gcssDesc, nv.asset])) rep.unchanged++;
+      } else if (newStatus === st2 && JSON.stringify([old.desc, old.model, old.serial, old.funcLoc, old.remark, old.gcss, old.gcssDesc, old.asset, old.lin]) === JSON.stringify([nv.desc, nv.model, nv.serial, nv.funcLoc, nv.remark, nv.gcss, nv.gcssDesc, nv.asset, nv.lin || old.lin])) rep.unchanged++;
       rep.updated++;
     } else {
       rec = { ...nv, notes: '', location: '', nmcSince: '', override: null, walkAt: '', inExport: true, lastImport: stamp };

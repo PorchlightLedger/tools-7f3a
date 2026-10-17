@@ -65,7 +65,7 @@ export const parseRosterText = (text, settings, o) => parseRosterRows(parseDelim
 
 /** mode: 'merge' (update by ID, add new, blank cells do not erase) | 'replace' */
 export function applyRoster(existing, parsed, mode = 'merge') {
-  if (mode === 'replace') return { roster: parsed.people.map((p) => ({ ...p })), added: parsed.people.length, updated: 0 };
+  if (mode === 'replace') { const lic = new Map(existing.filter((p) => p.licNo).map((p) => [p.id.toUpperCase(), p.licNo])); return { roster: parsed.people.map((p) => ({ ...p, ...(lic.has(p.id.toUpperCase()) ? { licNo: lic.get(p.id.toUpperCase()) } : {}) })), added: parsed.people.length, updated: 0 }; }
   const byId = new Map(existing.map((p) => [p.id.toUpperCase(), p])); const out = existing.map((p) => ({ ...p })); let added = 0, updated = 0;
   for (const np of parsed.people) {
     const o = byId.get(np.id.toUpperCase());

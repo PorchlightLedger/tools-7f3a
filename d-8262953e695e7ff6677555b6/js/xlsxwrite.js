@@ -21,11 +21,11 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cellXfs count="10">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>
-<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="left"/></xf>
+<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="left" vertical="top"/></xf>
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
-<xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
-<xf numFmtId="0" fontId="2" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
-<xf numFmtId="0" fontId="2" fillId="5" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+<xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="2" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="2" fillId="5" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>
 <xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>
 <xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>
@@ -45,16 +45,48 @@ function cellXml(ref, cell) {
     if (!isNaN(n)) return `<c r="${ref}" s="${ST.date}"><v>${n + 25569}</v></c>`;
     return `<c r="${ref}"${sa} t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
   }
-  if (typeof v === 'number' && isFinite(v) && type !== 'text') return `<c r="${ref}"${sa}><v>${v}</v></c>`;
-  if (typeof v === 'boolean') return `<c r="${ref}"${sa} t="b"><v>${v ? 1 : 0}</v></c>`;
+  const sTop = sa || ` s="${ST.wrap}"`; // numbers / booleans: top-aligned like the text cells beside them
+  if (typeof v === 'number' && isFinite(v) && type !== 'text') return `<c r="${ref}"${sTop}><v>${v}</v></c>`;
+  if (typeof v === 'boolean') return `<c r="${ref}"${sTop} t="b"><v>${v ? 1 : 0}</v></c>`;
   let str = String(v);
   if (/^[=+@]/.test(str)) str = "'" + str; // never let imported text turn into a formula
   return `<c r="${ref}"${sa} t="inlineStr"><is><t xml:space="preserve">${esc(str)}</t></is></c>`;
 }
-export function sheetXml(sh) {
+/** wrap estimate: number of lines `text` needs in a column `width` characters wide (greedy word wrap, honours newlines) */
+export function wrapLines(text, width) {
+  const lim = Math.max(1, Math.floor(width - 1)); let total = 0;
+  for (const para of String(text ?? '').split(/\r?\n/)) {
+    let lines = 1, cur = 0;
+    for (let w of para.split(/\s+/).filter(Boolean)) {
+      while (w.length > lim) { if (cur) { lines++; cur = 0; } w = w.slice(lim); if (w.length) { lines++; cur = 0; } }
+      if (!cur) cur = w.length; else if (cur + 1 + w.length <= lim) cur += 1 + w.length; else { lines++; cur = w.length; }
+    }
+    total += lines;
+  }
+  return Math.max(1, total);
+}
+const cellText = (c) => (c === null || c === undefined ? '' : typeof c === 'object' && !(c instanceof Date) ? (c.type === 'date' ? '31-Dec-2026' : String(c.v ?? '')) : String(c));
+/** Auto layout: column widths from content (capped by sh.cols[i], which then acts as the max width), wrap style on plain text cells,
+ *  explicit row heights from the estimated line counts (Excel does not auto-fit rows of generated files on open). */
+export function layoutSheet(sh) {
+  const rows = sh.rows || []; let maxC = 0; rows.forEach((r) => { if (r.length > maxC) maxC = r.length; });
+  const hdr = sh.headerRow ?? 0; const caps = sh.cols || []; const widths = [];
+  for (let c = 0; c < maxC; c++) {
+    const cap = caps[c] || 30; let w = 0;
+    rows.forEach((r, ri) => { const t = cellText(r[c]); if (!t) return; if (ri === hdr) { const lw = Math.max(...t.split(/\s+/).map((x) => x.length)); w = Math.max(w, Math.min(lw + 2, cap)); } else { const m = Math.max(...t.split(/\r?\n/).map((x) => x.length)); w = Math.max(w, m * 1.05 + 2); } });
+    widths.push(Math.round(Math.min(cap, Math.max(6, w)) * 10) / 10);
+  }
+  const heights = rows.map((r, ri) => { let lines = 1; for (let c = 0; c < r.length; c++) { const t = cellText(r[c]); if (t) lines = Math.max(lines, wrapLines(t, widths[c])); } return lines <= 1 ? null : Math.min(409, Math.round((lines * 15 + 2) * 10) / 10); });
+  const wrapped = rows.map((r, ri) => r.map((c) => { if (ri === hdr || c === '' || c === null || c === undefined) return c; if (typeof c === 'string') return { v: c, s: 'wrap', type: 'text' }; if (typeof c === 'object' && !c.s && !c.type && typeof c.v === 'string') return { ...c, s: 'wrap' }; return c; }));
+  return { rows: wrapped, widths, heights };
+}
+export function sheetXml(sh0) {
+  const lay = sh0.autosize ? layoutSheet(sh0) : null;
+  const sh = lay ? { ...sh0, rows: lay.rows, cols: lay.widths } : sh0; const heights = lay ? lay.heights : [];
   const rows = sh.rows || []; let maxC = 0; rows.forEach((r) => { if (r.length > maxC) maxC = r.length; });
   const hdrRow = sh.headerRow ?? 0; // index of header row (or -1)
   let x = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">';
+  if (sh.autosize) x += '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>';
   x += `<dimension ref="A1:${colName(Math.max(0, maxC - 1))}${Math.max(1, rows.length)}"/>`;
   x += '<sheetViews><sheetView workbookViewId="0"' + (sh.tabSelected ? ' tabSelected="1"' : '') + '>';
   if (sh.freeze !== false && hdrRow >= 0) x += `<pane ySplit="${hdrRow + 1}" topLeftCell="A${hdrRow + 2}" activePane="bottomLeft" state="frozen"/>`;
@@ -62,7 +94,7 @@ export function sheetXml(sh) {
   if (sh.cols && sh.cols.length) x += '<cols>' + sh.cols.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('') + '</cols>';
   x += '<sheetData>';
   rows.forEach((r, ri) => {
-    x += `<row r="${ri + 1}">`;
+    x += heights[ri] ? `<row r="${ri + 1}" ht="${heights[ri]}" customHeight="1">` : `<row r="${ri + 1}">`;
     r.forEach((c, ci) => {
       let cc = c;
       if (ri === hdrRow && c !== null && c !== undefined && c !== '') cc = { v: typeof c === 'object' ? c.v : c, s: 'header', type: 'text' };
@@ -72,7 +104,8 @@ export function sheetXml(sh) {
   });
   x += '</sheetData>';
   if (sh.autofilter !== false && hdrRow >= 0 && rows.length > hdrRow + 1 && maxC > 0) x += `<autoFilter ref="A${hdrRow + 1}:${colName(maxC - 1)}${rows.length}"/>`;
-  x += '<pageMargins left="0.5" right="0.5" top="0.6" bottom="0.6" header="0.3" footer="0.3"/><pageSetup orientation="landscape" fitToHeight="0"/>';
+  if (sh.validations && sh.validations.length) x += `<dataValidations count="${sh.validations.length}">` + sh.validations.map((v) => `<dataValidation type="list" allowBlank="1" showErrorMessage="1" errorTitle="Not an option" error="${esc(v.error || 'Pick one of the listed values')}" sqref="${v.sqref}"><formula1>${esc('"' + v.list.join(',') + '"')}</formula1></dataValidation>`).join('') + '</dataValidations>';
+  x += '<pageMargins left="0.5" right="0.5" top="0.6" bottom="0.6" header="0.3" footer="0.3"/><pageSetup orientation="landscape"' + (sh.autosize ? ' fitToWidth="1"' : '') + ' fitToHeight="0"/>';
   x += '</worksheet>';
   return x.replace('<sheetFormatPr', sh.fitWidth === false ? '<sheetFormatPr' : '<sheetFormatPr');
 }

@@ -1,10 +1,13 @@
 import { S, getCtx, commit, go } from '../ctx.js';
 import { h, openSheet, toast, field, segmented, toggle, confirmBox, clear, pick, safeAppend } from '../dom.js';
-import { vehicleView } from '../rules.js';
-import { SYMBOLS, LEGACY_SYMBOL, INSPECTION_TYPES, READING_TYPES, newForm, newFault, newPart, buildFormPdf, validateForm, formFileName, formHasNMC, symbolText, CIRCLED_X_PREFIX } from '../form5988.js';
+import { vehicleView, idLine } from '../rules.js';
+import { tmFor } from './tmedit.js';
+import { knownItems, modelKey } from '../tmdata.js';
+import { SYMBOLS, LEGACY_SYMBOL, INSPECTION_TYPES, READING_TYPES, newForm, newFault, newPart, buildFormPdf, validateForm, formFileName, formHasNMC, symbolText, CIRCLED_X_PREFIX, formUic } from '../form5988.js';
 import { STARTER_PRESETS, STARTER_PRESETS_LABEL } from '../store.js';
 import { shareOrDownload } from '../backup.js';
-import { fmtDate, todayISO, uid } from '../util.js';
+import { fmtDate, todayISO, uid, sortFaults, compareItems } from '../util.js';
+import { pickDate } from '../pickers.js';
 import { btn, emptyCard, statusChip } from '../ui.js';
 
 const DISCLAIMER = 'Worksheet aid. It does not replace the official DA Form 5988-E / GCSS-Army record. Check every symbol and TM reference against your TM and unit SOP.';
@@ -22,13 +25,13 @@ export function renderForms(root, rest, top) {
 }
 export async function newFormFlow() {
   const st = S(); const ctx = getCtx();
-  const items = ctx.fleet.map((v) => ({ v, vw: vehicleView(v, ctx) })).filter((u) => u.vw.status !== 'TURNED IN').sort((a, b) => a.v.key.localeCompare(b.v.key, 'en', { numeric: true })).map((u) => ({ id: u.v.key, label: u.v.short, sub: `${u.vw.type} · ${u.v.model}`, badge: u.vw.status }));
+  const items = ctx.fleet.map((v) => ({ v, vw: vehicleView(v, ctx) })).filter((u) => u.vw.status !== 'TURNED IN').sort((a, b) => a.v.key.localeCompare(b.v.key, 'en', { numeric: true })).map((u) => ({ id: u.v.key, label: u.v.short, sub: `${u.vw.type} · ${u.v.model} · ${idLine(u.v) || 'no LIN / VIN'}`, badge: u.vw.status }));
   if (!items.length) { toast('Import the fleet first.', 'bad'); return; }
   const r = await pick({ title: 'Choose vehicle for 5988-E', items }); if (r) openFormEditorFor(r);
 }
 export function openFormEditorFor(key) {
   const st = S(); const ctx = getCtx(); const v = ctx.fleetByKey.get(key); const vw = v ? vehicleView(v, ctx) : null;
-  const f = newForm(v, { settings: st.settings, tmByType: st.tmByType, typeName: vw ? vw.type : '' }); st.forms.push(f); commit({ render: false }); openFormEditor(f.id, true);
+  const f = newForm(v, { settings: st.settings, tmByType: st.tmByType, typeName: vw ? vw.type : '', tm: v ? tmFor(v, st, ctx) : null }); st.forms.push(f); commit({ render: false }); openFormEditor(f.id, true);
 }
 export function openFormEditor(id, isNew = false) {
   const st = S(); const f = st.forms.find((x) => x.id === id); if (!f) return; const original = JSON.stringify(f);
@@ -36,23 +39,32 @@ export function openFormEditor(id, isNew = false) {
     build: (b, api) => {
       const body = safeAppend(h('div', { class: 'form' })); b.append(body);
       const txt = (label, key, o = {}) => field(label, h('input', { type: 'text', value: f[key] || '', autocomplete: 'off', autocapitalize: o.cap || 'characters', 'data-testid': 'F-' + key, onInput: (e) => { f[key] = e.target.value; f.updated = new Date().toISOString(); } }), o.hint);
+      const effUic = () => formUic(f, st.settings);
+      const uicField = () => {
+        const inp = h('input', { type: 'text', value: effUic(), autocomplete: 'off', autocapitalize: 'characters', placeholder: st.settings.unitUic ? '' : 'set Unit UIC in Settings', 'data-testid': 'F-uic', onInput: (e) => { const v = e.target.value.trim(); f.updated = new Date().toISOString(); if (v === String(st.settings.unitUic || '').trim()) { f.uicOverride = false; f.uic = ''; } else { f.uicOverride = true; f.uic = v; } hint.textContent = hintText(); } });
+        const hintText = () => (f.uicOverride ? 'Changed for this form only.' : st.settings.unitUic ? 'From Settings > Unit UIC.' : 'Blank: set the Unit UIC in More > Settings.');
+        const hint = h('small', { class: 'hint', 'data-testid': 'F-uic-hint' }, hintText());
+        return h('div', { class: 'field' }, h('label', null, h('span', { class: 'lbl' }, 'UIC'), inp), hint, f.uicOverride ? h('button', { type: 'button', class: 'btn small', 'data-testid': 'F-uic-reset', onClick: () => { f.uicOverride = false; f.uic = ''; draw(); } }, 'Use Settings UIC') : null);
+      };
       const draw = () => {
-        clear(body); const warns = validateForm(f);
+        clear(body); const warns = validateForm(f, { settings: st.settings });
         body.append(h('div', { class: 'note', role: 'note' }, DISCLAIMER));
-        body.append(h('h3', null, 'Equipment data'), h('div', { class: 'grid2' }, txt('Admin number', 'adminNumber'), txt('Equip serial num', 'serial'), txt('Equip model', 'model'), txt('Registration', 'registration')), txt('Equip noun', 'noun'), txt('Equip NSN', 'nsn', { hint: 'Not in the GCSS export - type it if you want it on the form' }),
-          h('div', { class: 'grid2' }, field('Date', h('input', { type: 'date', value: f.date, 'data-testid': 'F-date', onChange: (e) => { f.date = e.target.value; } })), txt('UIC (optional)', 'uic')),
+        body.append(h('h3', null, 'Equipment data'), h('div', { class: 'grid2' }, txt('Admin number', 'adminNumber'), txt('VIN / Serial', 'serial'), txt('LIN', 'lin'), txt('Equip model', 'model'), txt('Registration', 'registration')), txt('Equip noun', 'noun'), txt('Equip NSN', 'nsn', { hint: 'Not in the GCSS export - type it if you want it on the form' }),
+          h('div', { class: 'grid2' }, h('div', { class: 'field' }, h('span', { class: 'lbl' }, 'Date'), h('button', { type: 'button', class: 'select-btn dt-btn', 'data-testid': 'F-date', 'data-value': f.date || '', onClick: async () => { const r = await pickDate({ title: 'Form date', value: f.date || '', allowClear: false }); if (r === undefined) return; f.date = r || f.date; draw(); } }, h('span', { class: 'val' }, f.date ? fmtDate(f.date) : 'Tap to set'))), uicField()),
           field('Type inspection', segmented(INSPECTION_TYPES.map(([c, n]) => [c, c, n]), f.typeInsp, (v) => { f.typeInsp = v; }, { label: 'Type of inspection', cls: 'wrapseg' })),
           h('div', { class: 'grid2' }, field('Reading type', segmented(READING_TYPES.map(([c, n]) => [c, c, n]), f.readingType, (v) => { f.readingType = v; }, { label: 'Reading type' })), txt('Current reading', 'reading', { hint: '' })));
-        body.append(h('h3', null, 'Publications (TM number / date / change)'));
+        { const vv = getCtx().fleetByKey.get(f.vehicleKey); const r = vv ? tmFor(vv, st) : null;
+          body.append(h('h3', null, 'Publications (TM number / date / change)'));
+          if (r) body.append(h('p', { class: 'hint', 'data-testid': 'F-tm-note' }, r.resolved ? `Auto-filled from the vehicle's TM (${r.level.startsWith('builtin') ? 'built-in table' : 'your entry'}): ${r.label}. Check it against your manual; enter the date and change number from the TM itself.${r.pmcs && !/^TM\s[\w&-]+$/i.test(r.pmcs) ? ' PMCS: ' + r.pmcs : ''}` : 'TM not found - enter manually (or set it on the vehicle / model in Fleet).')); }
         f.pubs.forEach((p, i) => body.append(h('div', { class: 'grid3' }, ...['tm', 'date', 'change'].map((k) => field(k === 'tm' ? `TM ${i + 1}` : k === 'date' ? 'Date' : 'Change', h('input', { type: 'text', value: p[k] || '', autocomplete: 'off', autocapitalize: 'characters', 'data-testid': `F-pub${i}-${k}`, onInput: (e) => { p[k] = e.target.value; } }))))));
         const vwt = (getCtx().fleetByKey.get(f.vehicleKey) || null); const tname = vwt ? vehicleView(vwt, getCtx()).type : '';
-        body.append(h('div', { class: 'row' }, f.pubs.length < 4 ? btn('+ Add TM line', () => { f.pubs.push({ tm: '', date: '', change: '' }); draw(); }, 'small') : null, tname ? btn(`Remember TMs for ${tname}`, () => { st.tmByType[tname] = f.pubs.filter((p) => p.tm).map((p) => ({ ...p })); commit({ render: false }); toast('Saved for this vehicle type'); }, 'small') : null));
+        body.append(h('div', { class: 'row' }, f.pubs.length < 4 ? btn('+ Add TM line', () => { f.pubs.push({ tm: '', date: '', change: '' }); draw(); }, 'small') : null, f.model ? btn(`Save these TMs for model ${f.model}`, () => { const ps = f.pubs.filter((p) => p.tm); st.tmByModel[modelKey(f.model)] = { ...(st.tmByModel[modelKey(f.model)] || {}), tm10: (ps[0] || {}).tm || '', pmcs: (ps[1] || {}).tm || '' }; commit({ render: false }); toast('Saved for this model'); }, 'small', { 'data-testid': 'F-tm-remember' }) : null));
         body.append(h('h3', null, 'Inspector'), h('div', { class: 'grid2' }, txt("Inspector's LIC #", 'inspLic'), txt('Time', 'inspTime')), txt('Inspector name / rank (prints on SIGNATURE line - leave blank to sign by hand)', 'inspName', { cap: 'words' }), txt('Maintenance supervisor / designated rep (optional)', 'supName', { cap: 'words' }));
         body.append(h('h3', null, 'Add a fault: tap the status symbol'));
         const symRow = h('div', { class: 'symrow', role: 'group', 'aria-label': 'Add fault by status symbol' });
         for (const s of [...SYMBOLS, ...(st.settings.showEPrefix ? [LEGACY_SYMBOL] : [])]) symRow.append(h('button', { type: 'button', class: 'sym s-' + (s.code === '-' ? 'dash' : s.code === '/' ? 'diag' : s.code === 'CX' ? 'cx' : s.code === 'E' ? 'e' : 'x'), title: s.title, 'aria-label': 'Add ' + s.title, 'data-testid': 'add-' + s.code, onClick: () => openFaultSheet(f, null, s.code, draw) }, h('b', null, s.code === 'CX' ? 'X' : s.code === '-' ? '--' : s.code), h('small', null, s.code === 'CX' ? 'circled' : s.code === 'X' ? 'NMC' : s.code === '/' ? 'shortcoming' : s.code === '-' ? 'due' : 'legacy')));
         body.append(symRow, h('details', { class: 'legend' }, h('summary', null, 'What the symbols mean'), h('ul', null, SYMBOLS.map((s) => h('li', null, s.short)), h('li', null, 'Circled TM item number = the fault is in the TM "equipment not ready/available" (NMC) column.'), h('li', null, 'Last-name initial = satisfactory / corrected.'))));
-        const sorted = [...f.faults].sort((a, c) => (parseInt(a.item, 10) || 0) - (parseInt(c.item, 10) || 0));
+        const sorted = sortFaults(f.faults);
         if (!sorted.length) body.append(h('p', { class: 'muted' }, 'No faults yet.'));
         sorted.forEach((x) => body.append(h('button', { type: 'button', class: 'faultrow', 'data-testid': 'fault-row', onClick: () => openFaultSheet(f, x, x.symbol, draw) }, h('span', { class: 'fnum' + (x.circleItem ? ' circ' : '') }, String(x.item).padStart(4, '0')), h('span', { class: 'fsym s-' + (x.symbol === '-' ? 'dash' : x.symbol === '/' ? 'diag' : x.symbol === 'CX' ? 'cx' : 'x') }, symbolText(x.symbol)), h('span', { class: 'fdesc' }, x.desc || '(no description)', x.action ? h('small', null, 'Action: ' + x.action) : null))));
         body.append(h('h3', null, 'Parts required (optional)'));
@@ -66,7 +78,7 @@ export function openFormEditor(id, isNew = false) {
         h('button', { class: 'btn', type: 'button', 'data-testid': 'form-save', onClick: () => { f.updated = new Date().toISOString(); commit(); toast('Worksheet saved'); } }, 'Save'),
         h('button', { class: 'btn primary', type: 'button', 'data-testid': 'form-pdf', onClick: async () => {
           f.updated = new Date().toISOString(); commit({ render: false });
-          try { const bytes = buildFormPdf(f, { unitName: st.settings.unitName }); const r = await shareOrDownload(bytes, formFileName(f), 'application/pdf', { title: `DA Form 5988-E worksheet ${f.adminNumber || ''}`, text: 'Worksheet aid - not an official form.' });
+          try { const bytes = buildFormPdf(f, { unitName: st.settings.unitName, uic: formUic(f, st.settings) }); const r = await shareOrDownload(bytes, formFileName(f), 'application/pdf', { title: `DA Form 5988-E worksheet ${f.adminNumber || ''}`, text: 'Worksheet aid - not an official form.' });
             if (r.method === 'download') toast('PDF saved to Downloads / Files'); else if (r.method === 'share') toast('Shared'); window.__lastPdf = { size: bytes.length, name: formFileName(f), method: r.method };
           } catch (e) { console.error(e); toast('Could not make the PDF: ' + e.message, 'bad'); }
         } }, 'Make PDF / share'));
@@ -83,7 +95,8 @@ function openFaultSheet(form, fault, symbol, done) {
       body.append(field('Status symbol', h('div', { class: 'symrow', role: 'radiogroup', 'aria-label': 'Status symbol' }, syms.map((s) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(d.symbol === s.code), class: 'sym s-' + (s.code === '-' ? 'dash' : s.code === '/' ? 'diag' : s.code === 'CX' ? 'cx' : s.code === 'E' ? 'e' : 'x') + (d.symbol === s.code ? ' on' : ''), title: s.title, 'data-testid': 'sym-' + s.code, onClick: () => { const was = d.symbol; d.symbol = s.code; if (s.code === 'CX' && !d.action) d.action = CIRCLED_X_PREFIX; if (was === 'CX' && s.code !== 'CX' && d.action === CIRCLED_X_PREFIX) d.action = ''; draw(); } }, h('b', null, s.code === 'CX' ? 'X' : s.code === '-' ? '--' : s.code), h('small', null, s.code === 'CX' ? 'circled' : s.code === 'X' ? 'NMC' : s.code === '/' ? 'shortcoming' : s.code === '-' ? 'due' : 'legacy'))))));
       body.append(h('p', { class: 'hint' }, (syms.find((s) => s.code === d.symbol) || {}).short));
       if (d.symbol === 'CX') body.append(h('p', { class: 'note' }, 'Only the commander (or designated representative / maintenance officer) may circle an X, and never for something that endangers the crew. Put the limitation in the corrective action.'));
-      body.append(h('div', { class: 'grid2' }, field('TM item number', h('input', { type: 'text', inputmode: 'numeric', value: d.item, 'data-testid': 'fl-item', onInput: (e) => { d.item = e.target.value.trim(); } })), field('Fault date', h('input', { type: 'date', value: d.date, onChange: (e) => { d.date = e.target.value; } }))));
+      body.append(h('div', { class: 'grid2' }, field('TM item number', h('input', { type: 'text', value: d.item, autocapitalize: 'characters', autocomplete: 'off', 'data-testid': 'fl-item', onInput: (e) => { d.item = e.target.value.trim(); } }), 'Sorted by this number on the form (1, 2, 3a, 10).'), h('div', { class: 'field' }, h('span', { class: 'lbl' }, 'Fault date'), h('button', { type: 'button', class: 'select-btn dt-btn', 'data-testid': 'fl-date', 'data-value': d.date || '', onClick: async () => { const r = await pickDate({ title: 'Fault date', value: d.date || '', allowClear: false }); if (r === undefined) return; d.date = r || d.date; draw(); } }, h('span', { class: 'val' }, d.date ? fmtDate(d.date) : 'Tap to set')))));
+      { const ki = knownItems(form.model, st); if (ki.length) body.append(btn('Pick a known TM item number', async () => { const r = await pick({ title: 'Known PMCS item numbers', items: ki.slice().sort((a, c) => compareItems(a.n, c.n)).map((k) => ({ id: k.n, label: k.n, sub: k.desc, badge: k.from === 'saved' ? 'saved' : 'used before' })), note: 'Item numbers you saved for this model or used on earlier worksheets.' }); if (r) { const k = ki.find((x) => x.n === r); d.item = k.n; if (!d.desc && k.desc) d.desc = k.desc; draw(); } }, 'small', { 'data-testid': 'fl-known' })); }
       body.append(toggle('Circle the item number (fault is in the TM "not ready / available" column)', !!d.circleItem, (v) => { d.circleItem = v; }));
       const desc = h('textarea', { rows: 3, value: d.desc, placeholder: 'Describe the fault', 'aria-label': 'Fault description', 'data-testid': 'fl-desc', onInput: (e) => { d.desc = e.target.value; } });
       body.append(field('Deficiency / shortcoming description', desc), btn('Pick from preset list', async () => {

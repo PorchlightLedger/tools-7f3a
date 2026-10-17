@@ -37,7 +37,7 @@ export const FLAG_FIELDS = ['ammo', 'hazmat', 'nvd'];
 
 export function defaultSettings() {
   return {
-    recipient: '', unitName: '', dispatcherDefault: '',
+    recipient: '', unitName: '', dispatcherDefault: '', unitUic: '', platoonRules: [],
     licenseWindow: 30, tcRule: 'WARN', tcQualWarn: false, pmcsRule: 'WARN', gcssIdRule: 'WARN',
     agingAmber: 30, agingRed: 90, gcssStaleDays: 7, asOfOverride: '',
     prefixes: [...DEFAULT_PREFIXES], turnedIn: [...DEFAULT_TURNED_IN],
@@ -50,7 +50,10 @@ export function defaultSettings() {
 /** Auto-detect: anything before a final "A-123" style token (letters, hyphen, digits, optional letters), separated by space/dash, is a unit prefix.
  *  "WXYZ12 A-362X" -> "A-362X", "WXYZ12-A-101" -> "A-101". Returns null when there is no such leading part. */
 const TAIL_RE = /^(.*?[A-Za-z0-9])[\s\u00a0-]+([A-Za-z]{1,2}\s*-\s*\d+[A-Za-z]{0,3})$/;
-function autoTail(raw) { const m = TAIL_RE.exec(String(raw ?? '').trim()); return m ? m[2] : null; }
+// letters directly followed by digits (e.g. "SPT122") only count as the bumper when what comes before looks like a UIC (4+ chars incl. a digit);
+// that keeps "A-SPT122" (no UIC in front) intact.
+const TAIL_RE2 = /^(.{3,}?\d[A-Za-z0-9]*)[\s\u00a0-]+([A-Za-z]{2,4}\d+[A-Za-z]{0,3})$/;
+function autoTail(raw) { const t = String(raw ?? '').trim(); const m = TAIL_RE.exec(t); if (m) return m[2]; const m2 = TAIL_RE2.exec(t); return m2 ? m2[2] : null; }
 export function normBumper(s, prefixes = DEFAULT_PREFIXES, uic = '') {
   let k = String(s ?? '').replace(/[\s\u00a0\-]/g, '').toUpperCase();
   const pf = [...prefixes, uic].map((p) => String(p || '').replace(/[\s\u00a0\-]/g, '').toUpperCase()).filter(Boolean).sort((a, b) => b.length - a.length);
@@ -69,6 +72,53 @@ export function isXBumper(s, prefixes = DEFAULT_PREFIXES, uic = '') { return /[0
 
 export function turnedInKeys(settings) { return new Set((settings.turnedIn || []).map((b) => normBumper(b, settings.prefixes)).filter(Boolean)); }
 export function isTurnedIn(v, settings) { return turnedInKeys(settings).has(v.key); }
+
+// ---------- platoon rules (generic: pattern -> label, first match wins, editable in Settings) ----------
+/** One rule = {label, pattern}. pattern kinds:
+ *   num<100 | num>=200 | num=5 | num 100-199, 1000-1999   numeric value of the FIRST digit run in the bumper (A-362X -> 362)
+ *   re:<regex>                                                  case-insensitive regular expression on the short bumper
+ *   glob: * any text, ? one char, # one digit, e.g. A-1##*       (matched against the short bumper, with or without hyphen)
+ */
+export function compilePlatoonRule(rule) {
+  const label = clean(rule && rule.label), pat = clean(rule && rule.pattern);
+  if (!label) return { error: 'missing platoon label', label, pattern: pat };
+  if (!pat) return { error: 'missing pattern', label, pattern: pat };
+  try {
+    if (/^re:/i.test(pat)) { const re = new RegExp(pat.slice(3).trim(), 'i'); return { label, pattern: pat, test: (b) => re.test(b) }; }
+    if (/^num\b/i.test(pat)) {
+      const conds = pat.replace(/^num/i, '').split(/,|\bor\b/i).map((c) => c.trim()).filter(Boolean).map((c) => {
+        let m; if ((m = /^(<=|>=|<|>|=)\s*(\d+)$/.exec(c))) { const n = +m[2]; return { '<': (x) => x < n, '<=': (x) => x <= n, '>': (x) => x > n, '>=': (x) => x >= n, '=': (x) => x === n }[m[1]]; }
+        if ((m = /^(\d+)\s*-\s*(\d+)$/.exec(c))) { const a = +m[1], b = +m[2]; return (x) => x >= a && x <= b; }
+        if ((m = /^(\d+)$/.exec(c))) { const n = +m[1]; return (x) => x === n; }
+        throw new Error('cannot read "' + c + '"');
+      });
+      if (!conds.length) throw new Error('no condition');
+      return { label, pattern: pat, test: (b) => { const m = /\d+/.exec(b); if (!m) return false; const n = parseInt(m[0], 10); return conds.some((f) => f(n)); } };
+    }
+    const re = new RegExp('^' + pat.replace(/[.+^${}()|[\]\\-]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.').replace(/#/g, '\\d') + '$', 'i');
+    return { label, pattern: pat, test: (b) => re.test(b) || re.test(b.replace(/[\s\-]/g, '')) };
+  } catch (e) { return { error: String(e.message || e), label, pattern: pat }; }
+}
+const _prCache = new WeakMap();
+export function compiledPlatoonRules(settings) {
+  const rules = (settings && settings.platoonRules) || []; if (!Array.isArray(rules)) return [];
+  let c = _prCache.get(rules); if (c && c.n === rules.length && c.sig === JSON.stringify(rules)) return c.list;
+  const list = rules.map(compilePlatoonRule); _prCache.set(rules, { n: rules.length, sig: JSON.stringify(rules), list }); return list;
+}
+export function platoonRuleErrors(settings) { return compiledPlatoonRules(settings).filter((r) => r.error).map((r) => `${r.label || '(no label)'} | ${r.pattern}: ${r.error}`); }
+/** platoon label of a short bumper text by rules; '' when nothing matches */
+export function platoonByRules(short, settings) { const b = clean(short).toUpperCase(); for (const r of compiledPlatoonRules(settings)) if (!r.error && r.test(b)) return r.label; return ''; }
+/** a manual per-vehicle platoon wins over the rules */
+export function vehiclePlatoon(v, settings) { return clean(v.platoonSet) || platoonByRules(v.short || v.bumper, settings); }
+/** distinct platoon labels in rule order (for filters) */
+export function platoonLabels(settings) { const seen = []; for (const r of compiledPlatoonRules(settings)) if (!r.error && !seen.includes(r.label)) seen.push(r.label); return seen; }
+export function platoonText(rules) { return (rules || []).map((r) => `${r.label} | ${r.pattern}`).join('\n'); }
+export function parsePlatoonText(text) { return String(text || '').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#')).map((l) => { const i = l.indexOf('|'); return i < 0 ? { label: l, pattern: '' } : { label: l.slice(0, i).trim(), pattern: l.slice(i + 1).trim() }; }); }
+
+// ---------- vehicle identifiers ----------
+/** VIN / serial and LIN, with manual edits winning over the GCSS values */
+export function vehIds(v) { return { vin: clean(v.vinSet) || clean(v.serial), lin: clean(v.linSet) || clean(v.lin) }; }
+export const idLine = (v) => { const { vin, lin } = vehIds(v); return [lin ? `LIN ${lin}` : '', vin ? `VIN/Serial ${vin}` : ''].filter(Boolean).join(' · '); };
 
 // ---------- model map ----------
 export function modelLookup(settings) {
@@ -163,7 +213,7 @@ export function vehicleView(v, ctx) {
   const s = vehicleStatus(v, ctx.settings); const mi = modelInfo(v.model, ctx.lookup);
   const gnd = clean(v.gcssDesc).toUpperCase() === 'NOT DISPATCHABLE';
   const days = daysNMC(v, s.status, ctx.asOf);
-  return { ...s, ...mi, gcssNotDispatchable: gnd, days, aging: nmcAging(days, ctx.settings) };
+  return { ...s, ...mi, gcssNotDispatchable: gnd, days, aging: nmcAging(days, ctx.settings), platoon: vehiclePlatoon(v, ctx.settings), ...vehIds(v) };
 }
 /** Can this vehicle be dispatched on its own (ignoring trips)? */
 export function vehicleUsable(view) { return view.status === 'FMC' && view.cls === 'Vehicle' && view.ruleOk && !view.gcssNotDispatchable; }

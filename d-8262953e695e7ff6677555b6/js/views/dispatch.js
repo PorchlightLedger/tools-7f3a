@@ -1,22 +1,27 @@
 import { store, S, getCtx, commit, go } from '../ctx.js';
+import { pickDate, pickTime } from '../pickers.js';
+import { assignVehicleToChalk, chalkLabel } from '../chalk.js';
 import { h, openSheet, toast, field, segmented, toggle, pick, confirmBox, clear } from '../dom.js';
-import { evaluateTrip, isActiveTrip, usableVehicles, usableTowed, usablePeople, vehicleView, personLabel, tripSummaryMessage, TRIP_STATUSES, personName, missingGcssId } from '../rules.js';
-import { uid, todayISO, nowHHMM, normTime, timeForInput, fmtDate } from '../util.js';
-import { resultChip, tripTimes, nameWithId, btn, chips, emptyCard, STATUS_CLASS } from '../ui.js';
+import { evaluateTrip, isActiveTrip, usableVehicles, usableTowed, usablePeople, vehicleView, personLabel, tripSummaryMessage, TRIP_STATUSES, personName, missingGcssId, idLine, platoonLabels } from '../rules.js';
+import { uid, todayISO, nowHHMM, fmtDate } from '../util.js';
+import { resultChip, tripTimes, nameWithId, btn, chips, emptyCard, STATUS_CLASS, licNoBadge } from '../ui.js';
 import { openExportSheet } from './exporter.js';
 
-let filter = 'active';
+let filter = 'active'; let platoonFilter = 'all';
 export function renderDispatch(root, rest, top) {
   if (rest[0] === 'new') { setTimeout(() => { history.replaceState(null, '', '#dispatch'); openTripEditor(null); }, 0); }
   const st = S(); const ctx = getCtx();
   top.append(btn('＋ New trip', () => openTripEditor(null), 'primary small', { 'data-testid': 'new-trip' }));
   const today = todayISO();
   root.append(chips([['active', 'Active'], ['today', 'Today'], ['all', 'All'], ['Back', 'Back'], ['Cancelled', 'Cancelled']], filter, (v) => { filter = v; go('#dispatch'); }, { label: 'Filter trips' }));
+  const pl = platoonLabels(st.settings);
+  if (pl.length) root.append(chips([['all', 'All platoons'], ...pl.map((p) => [p, p])], platoonFilter, (v) => { platoonFilter = v; go('#dispatch'); }, { label: 'Filter trips by platoon' }));
   let trips = st.trips.map((t) => ({ t, ev: evaluateTrip(t, ctx) }));
+  if (platoonFilter !== 'all') trips = trips.filter(({ t }) => { const v = ctx.fleetByKey.get(t.vehicle); return v && vehicleView(v, ctx).platoon === platoonFilter; });
   trips = trips.filter(({ t }) => filter === 'all' || (filter === 'active' && isActiveTrip(t)) || (filter === 'today' && (t.dateOut === today || t.dateBack === today)) || t.status === filter);
-  trips.sort((a, b) => (a.t.dateOut || '9999').localeCompare(b.t.dateOut || '9999') || (a.t.timeOut || '').localeCompare(b.t.timeOut || '') || (a.t.chalk || 0) - (b.t.chalk || 0));
+  trips.sort((a, b) => (a.t.dateOut || '9999').localeCompare(b.t.dateOut || '9999') || (a.t.timeOut || '').localeCompare(b.t.timeOut || '') || (+a.t.chalk || 999) - (+b.t.chalk || 999) || (a.t.no || 0) - (b.t.no || 0));
   const nogo = st.trips.filter(isActiveTrip).filter((t) => evaluateTrip(t, ctx).result === 'NO-GO').length;
-  root.append(h('div', { class: 'row between' }, h('small', { class: 'muted' }, `${trips.length} shown · ${st.trips.length} total · ${nogo} NO-GO`), btn('Share spreadsheet', () => openExportSheet(), 'small', { 'data-testid': 'open-export' })));
+  root.append(h('div', { class: 'row between' }, h('small', { class: 'muted' }, `${trips.length} shown · ${st.trips.length} total · ${nogo} NO-GO`), h('span', { class: 'row' }, btn('Chalks', () => go('#more/chalk'), 'small', { 'data-testid': 'open-chalks' }), btn('Share spreadsheet', () => openExportSheet(), 'small', { 'data-testid': 'open-export' }))));
   if (!trips.length) root.append(emptyCard('No trips here', st.fleet.length && st.roster.length ? 'Tap New trip to plan one.' : 'Import your fleet and roster first (Fleet and Roster tabs), then plan trips.', btn('New trip', () => openTripEditor(null), 'primary')));
   const list = h('div', { class: 'trips' }); root.append(list);
   for (const { t, ev } of trips) list.append(tripCard(t, ev, ctx));
@@ -24,10 +29,12 @@ export function renderDispatch(root, rest, top) {
 }
 function tripCard(t, ev, ctx) {
   const v = ctx.fleetByKey.get(t.vehicle); const d = ctx.rosterById.get(t.driver); const c = ctx.rosterById.get(t.tc);
-  const card = h('article', { class: 'card trip ' + (ev.result === 'NO-GO' ? 'bad' : ev.result === 'WARN' ? 'warn' : ''), 'data-testid': 'trip-card', 'data-chalk': t.chalk });
-  card.append(h('div', { class: 'tr-top' }, h('b', null, `#${t.chalk || ''} · ${v ? v.short : 'no vehicle'}`, v ? h('small', null, ' ' + vehicleView(v, ctx).type) : ''), h('span', { class: 'chip', 'data-testid': 'trip-status' }, t.status), resultChip(ev.result)));
+  const vw = v ? vehicleView(v, ctx) : null;
+  const card = h('article', { class: 'card trip ' + (ev.result === 'NO-GO' ? 'bad' : ev.result === 'WARN' ? 'warn' : ''), 'data-testid': 'trip-card', 'data-trip': t.no, 'data-chalk': t.chalk || '', 'data-status': t.status });
+  card.append(h('div', { class: 'tr-top' }, h('b', null, `#${t.no || ''} · ${v ? v.short : 'no vehicle'}`, vw ? h('small', null, ' ' + vw.type) : ''), t.chalk ? h('span', { class: 'chip', 'data-testid': 'trip-chalk' }, 'Chalk ' + t.chalk) : null, vw && vw.platoon ? h('span', { class: 'chip', 'data-testid': 'trip-platoon' }, vw.platoon) : null, h('span', { class: 'chip', 'data-testid': 'trip-status' }, t.status), resultChip(ev.result)));
+  if (v) card.append(h('div', { class: 'tr-sub muted', 'data-testid': 'trip-ids' }, idLine(v) || 'no LIN / VIN on file'));
   card.append(h('div', { class: 'tr-sub' }, tripTimes(t), ' · ', t.dest || h('i', null, 'no destination')));
-  card.append(h('div', { class: 'tr-sub' }, 'Driver: ', nameWithId(d, t.driver)));
+  card.append(h('div', { class: 'tr-sub' }, 'Driver: ', nameWithId(d, t.driver), licNoBadge(d)));
   if (t.tc) card.append(h('div', { class: 'tr-sub' }, 'TC: ', nameWithId(c, t.tc)));
   const extra = []; if (t.pax && t.pax.length) extra.push(`${t.pax.length} pax`); if (t.towed && t.towed.length) extra.push('towing ' + t.towed.map((k) => (ctx.fleetByKey.get(k) || {}).short || k).join(', ')); if (t.dispatcher) extra.push('disp: ' + t.dispatcher); extra.push(t.pmcs ? 'PMCS ✔' : 'PMCS ✗');
   card.append(h('div', { class: 'tr-sub muted' }, extra.join(' · ')));
@@ -50,14 +57,14 @@ export async function setTripStatus(id, status) {
     t.status = 'Out'; if (!t.dateOut) t.dateOut = todayISO(); if (!t.timeOut) t.timeOut = nowHHMM();
   } else if (status === 'Back') { t.status = 'Back'; if (!t.dateBack) t.dateBack = todayISO(); if (!t.timeBack) t.timeBack = nowHHMM(); }
   else if (status === 'Cancelled') { if (!(await confirmBox({ title: 'Cancel this trip?', message: 'It stays in the log as Cancelled.', okText: 'Cancel trip', cancelText: 'Keep', danger: true }))) return; t.status = 'Cancelled'; }
-  commit(); toast(`Trip #${t.chalk} → ${t.status}`);
+  commit(); toast(`Trip #${t.no} → ${t.status}`);
 }
 
 export function openTripEditor(id) {
   const st = S(); const existing = id ? st.trips.find((t) => t.id === id) : null;
-  const draft = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid('t'), chalk: null, status: 'Planned', dateOut: todayISO(), timeOut: '', dateBack: '', timeBack: '', dest: '', vehicle: '', driver: '', tc: '', pax: [], towed: [], dispatcher: st.settings.dispatcherDefault || '', pmcs: false, notes: '', created: new Date().toISOString() };
-  const vehLabel = (k) => { const v = getCtx().fleetByKey.get(k); return v ? `${v.short} · ${vehicleView(v, getCtx()).type}` : k; };
-  openSheet({ title: existing ? `Trip #${existing.chalk}` : 'New trip', tall: true,
+  const draft = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid('t'), no: 0, chalk: '', status: 'Planned', dateOut: todayISO(), timeOut: '', dateBack: '', timeBack: '', dest: '', vehicle: '', driver: '', tc: '', pax: [], towed: [], dispatcher: st.settings.dispatcherDefault || '', pmcs: false, notes: '', created: new Date().toISOString() };
+  const vehLabel = (k) => { const v = getCtx().fleetByKey.get(k); if (!v) return k; const vw = vehicleView(v, getCtx()); return `${v.short} · ${vw.type}${vw.platoon ? ' · ' + vw.platoon : ''} · ${idLine(v) || 'no LIN / VIN'}`; };
+  openSheet({ title: existing ? `Trip #${existing.no}` : 'New trip', tall: true,
     build: (b, api) => {
       const checks = h('section', { class: 'checks', 'data-testid': 'checks', 'aria-live': 'polite' });
       const refresh = () => {
@@ -67,7 +74,7 @@ export function openTripEditor(id) {
         if (isActiveTrip(draft)) {
           if (!ev.blockers.length && !ev.warnings.length) checks.append(h('p', null, 'Everything checks out.'));
           checks.append(reasonList(ev));
-          const d = ctx.rosterById.get(draft.driver); if (d) checks.append(h('p', { class: 'gcss-line', 'data-testid': 'driver-gcss' }, 'Driver GCSS-Army ID: ', missingGcssId(d) ? h('span', { class: 'chip orange' }, 'MISSING') : h('b', { class: 'mono' }, d.gcssId)));
+          const d = ctx.rosterById.get(draft.driver); if (d) checks.append(h('p', { class: 'gcss-line', 'data-testid': 'driver-gcss' }, 'Driver GCSS-Army ID: ', missingGcssId(d) ? h('span', { class: 'chip orange' }, 'MISSING') : h('b', { class: 'mono' }, d.gcssId), d.licNo ? h('span', { 'data-testid': 'driver-licno' }, ' · Operator license no.: ', h('b', { class: 'mono' }, d.licNo)) : null));
         } else checks.append(h('p', { class: 'muted' }, 'Checks are skipped for Back / Cancelled trips.'));
         draw();
       };
@@ -76,17 +83,22 @@ export function openTripEditor(id) {
       function draw() {
         const ctx = getCtx(); clear(rows);
         rows.append(field('Status', segmented(TRIP_STATUSES.map((s) => [s, s]), draft.status, (v) => { draft.status = v; if (v === 'Out') { if (!draft.dateOut) draft.dateOut = todayISO(); } refresh(); }, { label: 'Trip status' })));
-        const dOut = h('input', { type: 'date', value: draft.dateOut, 'data-testid': 'f-dateOut', onChange: (e) => { draft.dateOut = e.target.value; refresh(); } });
-        const tOut = h('input', { type: 'time', value: timeForInput(draft.timeOut), 'data-testid': 'f-timeOut', onChange: (e) => { draft.timeOut = normTime(e.target.value) || ''; refresh(); } });
-        const dBack = h('input', { type: 'date', value: draft.dateBack, onChange: (e) => { draft.dateBack = e.target.value; refresh(); } });
-        const tBack = h('input', { type: 'time', value: timeForInput(draft.timeBack), onChange: (e) => { draft.timeBack = normTime(e.target.value) || ''; refresh(); } });
-        rows.append(h('div', { class: 'grid2' }, field('Date out', dOut), field('Time out', tOut), field('Date back', dBack), field('Time back', tBack)));
+        // Date / time: tap to open the in-app picker (explicit OK / Cancel). Nothing is written until OK.
+        { const plan = S().chalkPlan.chalks;
+          rows.append(field('Chalk', segmented([['', 'None'], ...plan.map((c) => [String(c.n), 'Chalk ' + c.n])], draft.chalk ? String(draft.chalk) : '', (v) => { draft.chalk = v ? +v : ''; refresh(); }, { label: 'Chalk' }), plan.length ? 'Plan chalks on More > Chalk planner' : 'No chalks yet: add them on More > Chalk planner'));
+          const v0 = ctx.fleetByKey.get(draft.vehicle); if (v0) { const vw0 = vehicleView(v0, ctx); rows.append(h('p', { class: 'hint', 'data-testid': 'f-veh-ids' }, [idLine(v0), vw0.platoon].filter(Boolean).join(' · ') || 'No LIN / VIN on file (add on the Fleet tab)')); } }
+        const dt = (label, key, kind, testid) => { const val = draft[key]; const txt = kind === 'date' ? (val ? fmtDate(val) : 'Tap to set') : (val ? val : 'Tap to set');
+          return h('div', { class: 'field' }, h('span', { class: 'lbl' }, label), h('button', { type: 'button', class: 'select-btn dt-btn', 'data-testid': testid, 'data-value': val || '', 'aria-label': `${label}: ${val || 'not set'}`, onClick: async () => {
+            const r = kind === 'date' ? await pickDate({ title: label, value: val || '' }) : await pickTime({ title: label, value: val || '' });
+            if (r === undefined) return; draft[key] = r; if (key === 'dateOut' && !r && draft.status === 'Out') draft.dateOut = todayISO(); refresh();
+          } }, h('span', { class: 'val' }, txt))); };
+        rows.append(h('div', { class: 'grid2' }, dt('Date out', 'dateOut', 'date', 'f-dateOut'), dt('Time out', 'timeOut', 'time', 'f-timeOut'), dt('Date back', 'dateBack', 'date', 'f-dateBack'), dt('Time back', 'timeBack', 'time', 'f-timeBack')));
         rows.append(field('Destination / mission', h('input', { type: 'text', value: draft.dest, 'data-testid': 'f-dest', autocomplete: 'off', onInput: (e) => { draft.dest = e.target.value; } })));
         rows.append(sel('Vehicle', () => (draft.vehicle ? vehLabel(draft.vehicle) : 'Tap to choose (FMC only)'), async () => {
-          const ctx2 = getCtx(); const mk = (u) => ({ id: u.v.key, label: u.v.short, sub: `${u.vw.type} · ${u.v.model}`, badge: u.vw.status, badgeClass: STATUS_CLASS[u.vw.status] });
+          const ctx2 = getCtx(); const mk = (u) => ({ id: u.v.key, label: u.v.short, sub: `${u.vw.type} · ${u.v.model}${u.vw.platoon ? ' · ' + u.vw.platoon : ''} · ${idLine(u.v) || 'no LIN / VIN'}`, badge: u.vw.status, badgeClass: STATUS_CLASS[u.vw.status] });
           const all = ctx2.fleet.map((v) => ({ v, vw: vehicleView(v, ctx2) })).filter((u) => u.vw.status !== 'TURNED IN' && u.vw.cls !== 'Towed').sort((a, b) => a.v.key.localeCompare(b.v.key, 'en', { numeric: true }));
           const r = await pick({ title: 'Choose vehicle', items: usableVehicles(ctx2, draft).map(mk), selected: draft.vehicle ? [draft.vehicle] : [], more: { label: 'Also show vehicles that cannot be dispatched (will be NO-GO)', items: all.map(mk) }, empty: 'No dispatchable vehicles. Import the GCSS export on the Fleet tab.', allowNone: 'None' });
-          if (r !== undefined) { draft.vehicle = r || ''; if (draft.driver && r) { /* keep driver; checks will show qualification */ } refresh(); }
+          if (r !== undefined) { draft.vehicle = r || ''; const planned = r && S().chalkPlan.assign[r]; if (planned && !draft.chalk) draft.chalk = planned; refresh(); }
         }, 'f-vehicle'));
         rows.append(sel('Driver', () => { const p = ctx.rosterById.get(draft.driver); return p ? `${personLabel(p)}${p.gcssId ? ' · ' + p.gcssId : ' · no GCSS ID'}` : 'Tap to choose (qualified, licensed, Active)'; }, async () => {
           const ctx2 = getCtx(); const mk = (p) => ({ id: p.id, label: personLabel(p), sub: `${p.platoon || ''} · lic ${p.licExp ? fmtDate(p.licExp) : 'none'}`, badge: p.gcssId ? p.gcssId : 'no GCSS ID', badgeClass: p.gcssId ? '' : 'orange' });
@@ -114,8 +126,10 @@ export function openTripEditor(id) {
         h('button', { class: 'btn primary', type: 'button', 'data-testid': 'trip-save', onClick: () => {
           if (draft.status === 'Out') { const ev = evaluateTrip(draft, getCtx()); if (ev.result === 'NO-GO') { toast('NO-GO: cannot mark Out. Fix the reasons shown, or save as Planned.', 'bad'); return; } if (!draft.timeOut) draft.timeOut = nowHHMM(); }
           if (draft.status === 'Back') { if (!draft.dateBack) draft.dateBack = todayISO(); if (!draft.timeBack) draft.timeBack = nowHHMM(); }
-          if (!existing) { st.chalkSeq = (st.chalkSeq || 0) + 1; draft.chalk = st.chalkSeq; st.trips.push(draft); } else Object.assign(existing, draft);
-          commit(); api.close(); toast(`Trip #${draft.chalk} saved`);
+          if (!existing) { st.chalkSeq = (st.chalkSeq || 0) + 1; draft.no = st.chalkSeq; st.trips.push(draft); } else Object.assign(existing, draft);
+          if (draft.vehicle && draft.chalk) assignVehicleToChalk(st, draft.vehicle, +draft.chalk, { trips: false });
+          else if (draft.vehicle && isActiveTrip(draft) && existing) assignVehicleToChalk(st, draft.vehicle, 0, { trips: false }); // chosen 'None': take it off the plan too
+          commit(); api.close(); toast(`Trip #${draft.no} saved`);
         } }, 'Save trip'));
     } });
 }

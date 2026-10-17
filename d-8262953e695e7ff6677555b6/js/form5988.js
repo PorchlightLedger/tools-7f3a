@@ -3,7 +3,9 @@
 // PARTS REQUIRED / MAINTENANCE FAULTS). APD publishes no blank PDF for it, so this layout follows public training
 // material of the printed form. This is a WORKSHEET AID. It does NOT replace the official form / GCSS-Army record.
 import { PdfDoc } from './pdf.js';
-import { fmtDate, parseDateLoose, todayISO, MONTHS, uid, pad } from './util.js';
+import { fmtDate, parseDateLoose, todayISO, MONTHS, uid, pad, sortFaults } from './util.js';
+import { vehIds } from './rules.js';
+import { tmPubs } from './tmdata.js';
 
 export const SYMBOLS = [
   { code: 'X', label: 'X', title: 'X - deficiency that places the equipment in an inoperable status (NMC)', short: 'X = deficiency: equipment inoperable (NMC)' },
@@ -17,13 +19,17 @@ export const READING_TYPES = [['M', 'Miles'], ['H', 'Hours'], ['K', 'Kilometers'
 export const symbolText = (c) => (c === '-' ? '--' : c === 'CX' ? 'X' : c);
 export const CIRCLED_X_PREFIX = 'CLEARED FOR LIMITED OPERATIONS - ';
 
-export function newForm(vehicle, { settings = {}, tmByType = {}, typeName = '', now = new Date() } = {}) {
+/** UIC printed on the form: the per-form override when set, otherwise the Settings "Unit UIC" (so a unit move updates every form without an override). */
+export function formUic(form, settings = {}) { return form.uicOverride ? String(form.uic || '').trim() : String(settings.unitUic || '').trim(); }
+export function newForm(vehicle, { settings = {}, tmByType = {}, typeName = '', tm = null, now = new Date() } = {}) {
   const tms = (tmByType && typeName && tmByType[typeName]) || [];
+  const ids = vehicle ? vehIds(vehicle) : { vin: '', lin: '' };
+  const auto = tm && tm.resolved ? tmPubs(tm, 2) : null;
   return {
-    id: uid('f'), vehicleKey: vehicle ? vehicle.key : '', date: todayISO(now), uic: '', adminNumber: vehicle ? vehicle.short || vehicle.bumper : '', serial: vehicle ? vehicle.serial || '' : '',
+    id: uid('f'), vehicleKey: vehicle ? vehicle.key : '', date: todayISO(now), uic: '', uicOverride: false, adminNumber: vehicle ? vehicle.short || vehicle.bumper : '', serial: ids.vin, lin: ids.lin,
     model: vehicle ? vehicle.model || '' : '', registration: vehicle ? vehicle.registration || '' : '', noun: vehicle ? vehicle.desc || '' : '', nsn: vehicle ? vehicle.nsn || '' : '',
-    typeInsp: 'B', readingType: 'M', reading: '',
-    pubs: [0, 1].map((i) => ({ tm: (tms[i] && tms[i].tm) || '', date: (tms[i] && tms[i].date) || '', change: (tms[i] && tms[i].change) || '' })),
+    typeInsp: 'B', readingType: 'M', reading: '', pmcsRef: tm && tm.resolved && tm.pmcs ? tm.pmcs : '',
+    pubs: auto || [0, 1].map((i) => ({ tm: (tms[i] && tms[i].tm) || '', date: (tms[i] && tms[i].date) || '', change: (tms[i] && tms[i].change) || '' })),
     inspLic: '', inspTime: '', inspName: '', inspTime2: '', supName: '',
     faults: [], parts: [], created: now.toISOString(), updated: now.toISOString(),
   };
@@ -37,8 +43,9 @@ export function newPart() { return { id: uid('p'), fault: '', doc: '', niin: '',
 export function formHasNMC(form) { return form.faults.some((f) => f.symbol === 'X' || f.symbol === 'CX'); }
 export function formDateText(iso) { return fmtDate(iso); }
 function dd(iso) { const d = parseDateLoose(iso); if (!d) return ''; const [y, m, day] = d.split('-'); return `${day}-${MONTHS[+m - 1]}-${y.slice(2)}`; }
-export function validateForm(form) {
+export function validateForm(form, { settings = {} } = {}) {
   const w = [];
+  if (!formUic(form, settings)) w.push('No UIC (set the Unit UIC in More > Settings, or type one for this form).');
   if (!form.adminNumber) w.push('No vehicle / admin number.');
   if (!form.pubs.some((p) => p.tm)) w.push('No TM publication entered (TM number and date go in the EQUIPMENT DATA block).');
   const seen = new Map();
@@ -63,7 +70,8 @@ function wrap(text, n) {
 const COLS = 100; // characters per line at 9pt Courier = 540pt
 export const FORM_FOOTER = 'Worksheet aid - not an official form. Verify against the TM and GCSS-Army. Layout follows public descriptions of DA Form 5988-E.';
 
-export function buildFormPdf(form, { unitName = '', now = new Date() } = {}) {
+export function buildFormPdf(form, { unitName = '', uic = null, now = new Date() } = {}) {
+  const uicText = uic === null ? String(form.uic || '').trim() : String(uic || '').trim();
   const FS = 9, CW = FS * 0.6, LH = 11.5, X0 = (612 - COLS * CW) / 2; // centred
   const pdf = new PdfDoc({ title: `DA Form 5988-E worksheet ${form.adminNumber || ''}` });
   let y = 0, page = 1;
@@ -74,7 +82,7 @@ export function buildFormPdf(form, { unitName = '', now = new Date() } = {}) {
   const footer = () => { pdf.text(36, 770, FORM_FOOTER, { font: 'helv', size: 6.5, color: [0.35, 0.35, 0.35] }); pdf.text(540, 770, `Page ${page}`, { font: 'helv', size: 6.5, color: [0.35, 0.35, 0.35] }); };
   const top = () => {
     y = 48; T(0, `Date: ${fmtDate(form.date) || ''}`); center('EQUIPMENT MAINTENANCE AND INSPECTION WORKSHEET', { bold: true }); right(`DA FORM 5988-E`, { bold: true }); y += LH;
-    T(0, unitName ? unitName.slice(0, 40) : ''); right(form.uic ? `UIC: ${form.uic}` : 'UIC: ________'); y += LH * 1.4;
+    T(0, unitName ? unitName.slice(0, 40) : ''); right(uicText ? `UIC: ${uicText}` : 'UIC: ________'); y += LH * 1.4;
   };
   const mk = (cells) => { let line = ''; for (const [col, str] of cells) { line = line.padEnd(col) + str; } return line; };
   const FC = { item: 0, date: 5, st: 16, desc: 23, act: 56, hrs: 86, lic: 92 }; const DW = 32, AW = 29;
@@ -88,13 +96,15 @@ export function buildFormPdf(form, { unitName = '', now = new Date() } = {}) {
   // EQUIPMENT DATA
   section('EQUIPMENT DATA'); y += LH * 1.2;
   const kv = (col, label, val, w) => T(col, `${label}: ${String(val || '').slice(0, w)}`);
-  kv(0, 'ADMIN NUMBER', form.adminNumber, 22); kv(50, 'EQUIP SERIAL NUM', form.serial, 30); y += LH;
+  kv(0, 'ADMIN NUMBER', form.adminNumber, 22); kv(50, 'VIN / SERIAL NUM', form.serial, 30); y += LH;
   kv(0, 'EQUIP MODEL', form.model, 24); kv(50, 'REGISTRATION', form.registration, 30); y += LH;
   kv(0, 'EQUIP NOUN', form.noun, 34); kv(50, 'TYPE INSP', form.typeInsp, 4); y += LH;
-  kv(0, 'EQUIP NSN', form.nsn, 24); kv(50, 'CURRENT READING', `${form.readingType || ''} ${form.reading || ''}`.trim(), 30); y += LH * 1.6;
+  kv(0, 'EQUIP NSN', form.nsn, 24); kv(50, 'CURRENT READING', `${form.readingType || ''} ${form.reading || ''}`.trim(), 30); y += LH;
+  kv(0, 'LIN', form.lin, 24); y += LH * 1.6;
   T(34, 'NUMBER', { bold: true }); T(66, 'DATE', { bold: true }); T(78, 'CHANGE NUMBER', { bold: true }); y += LH;
   const pubs = form.pubs.filter((p) => p.tm || p.date || p.change); const pubRows = pubs.length ? pubs : [{ tm: '', date: '', change: '' }];
   for (const p of pubRows) { T(0, 'PUBLICATION:'); T(14, String(p.tm || '').slice(0, 40)); T(66, String(p.date || '').slice(0, 10)); T(80, String(p.change || '').slice(0, 10)); y += LH; }
+  if (form.pmcsRef) { T(0, ('PMCS REF: ' + form.pmcsRef).slice(0, 100)); y += LH; }
   y += LH * 0.6;
   T(0, `INSPECTORS LIC #: ${form.inspLic ? form.inspLic : '________'}  TIME: ${form.inspTime ? form.inspTime : '____'}  SIGNATURE: ${form.inspName ? form.inspName.slice(0, 28) : '______________________'}  TIME: ${form.inspTime2 ? form.inspTime2 : '____'}`); y += LH * 1.8;
   // PARTS REQUIRED
@@ -111,10 +121,10 @@ export function buildFormPdf(form, { unitName = '', now = new Date() } = {}) {
   faultHeader();
   const need = (lines) => { if (y + lines * LH > 735) newPage(); };
   if (!form.faults.length) { T(0, '(no faults entered)'); y += LH; }
-  const sorted = [...form.faults].sort((a, b) => (parseInt(a.item, 10) || 0) - (parseInt(b.item, 10) || 0));
+  const sorted = sortFaults(form.faults);
   for (const f of sorted) {
     const d = wrap(f.desc, DW), a = wrap(f.action || '', AW); const n = Math.max(d.length, a.length); need(n + 0.4);
-    const itemTxt = String(f.item || '').padStart(4, '0').slice(-4);
+    const itemTxt = /^\d+$/.test(String(f.item || '')) ? String(f.item).padStart(4, '0').slice(-4) : String(f.item || '').slice(0, 7);
     T(FC.item, itemTxt); T(FC.date, dd(f.date)); T(FC.st + 2, symbolText(f.symbol), { bold: true });
     if (f.circleItem) pdf.ellipse(X0 + (FC.item + 2) * CW, y - 3.3, 2.5 * CW, 7.2, 0.7); // circled TM item number: fault is in the TM "not ready/available" column
     if (f.symbol === 'CX') pdf.circle(X0 + (FC.st + 2.5) * CW, y - 3, 6.5, 0.9);

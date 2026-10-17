@@ -1,6 +1,7 @@
 import { S, getCtx, commit, go } from '../ctx.js';
 import { h, openSheet, toast, field, segmented, clear, pick, safeAppend } from '../dom.js';
-import { vehicleView, VEHICLE_STATUSES, isNMC } from '../rules.js';
+import { vehicleView, VEHICLE_STATUSES, isNMC, idLine } from '../rules.js';
+import { pickDate } from '../pickers.js';
 import { todayISO, fmtDate } from '../util.js';
 import { statusChip, chips, btn, emptyCard } from '../ui.js';
 import { openFormEditorFor } from './form.js';
@@ -22,7 +23,7 @@ export function renderWalk(root, rest, top) {
   function draw() {
     clear(list); const items = visible(); list.append(h('p', { class: 'muted' }, `${items.length} shown`));
     for (const { v, vw } of items) list.append(h('button', { type: 'button', class: 'vrow', 'data-testid': 'walk-row', 'data-key': v.key, onClick: () => openWalk(v.key, items.map((x) => x.v.key)) },
-      h('div', { class: 'vr-main' }, h('b', null, v.short), h('small', null, vw.type), v.notes ? h('small', { class: 'muted' }, v.notes.slice(0, 60)) : null), h('div', { class: 'vr-side' }, statusChip(vw.status), seen(v) ? h('span', { class: 'chip go' }, 'seen ✔') : null)));
+      h('div', { class: 'vr-main' }, h('b', null, v.short), h('small', null, vw.type), h('small', { class: 'muted' }, idLine(v) || 'no LIN / VIN'), v.notes ? h('small', { class: 'muted' }, v.notes.slice(0, 60)) : null), h('div', { class: 'vr-side' }, statusChip(vw.status), seen(v) ? h('span', { class: 'chip go' }, 'seen ✔') : null)));
   }
   draw(); return 'Walk-around';
 }
@@ -35,6 +36,7 @@ export function openWalk(key, keys) {
       const v = st.fleet.find((x) => x.key === keys[idx]); if (!v) { api.close(); return; }
       const ctx = getCtx(); const vw = vehicleView(v, ctx); clear(body); api.setTitle(`${v.short} (${idx + 1}/${keys.length})`);
       body.append(h('div', { class: 'row' }, statusChip(vw.status), h('span', { class: 'chip' }, vw.type), vw.source === 'override' ? h('span', { class: 'chip warn' }, 'GCSS: ' + (v.gcss || '—')) : null));
+      body.append(h('p', { class: 'hint', 'data-testid': 'walk-ids' }, [idLine(v), vw.platoon].filter(Boolean).join(' · ') || 'No LIN / VIN on file (add it in the vehicle detail on the Fleet tab)'));
       for (const f of vw.flags) body.append(h('p', { class: 'flagline' }, '⚠ ' + f));
       const locked = vw.status === 'NMC-X';
       if (locked) body.append(h('p', { class: 'note' }, 'X vehicle: permanent NMC (cannot be changed here).'));
@@ -54,7 +56,7 @@ export function openWalk(key, keys) {
       const locs = (st.ui.lastLocations || []).slice(0, 6);
       const loc = h('input', { type: 'text', value: v.location || '', placeholder: v.funcLoc || 'e.g. Bay 3 / back fence line', 'aria-label': 'Location', 'data-testid': 'walk-location', onInput: (e) => { v.location = e.target.value; } });
       body.append(field('Location', loc), locs.length ? h('div', { class: 'filters' }, locs.map((l) => h('button', { type: 'button', class: 'fchip', onClick: () => { v.location = l; commit({ render: false }); draw(); } }, l))) : null);
-      body.append(field('NMC since', h('input', { type: 'date', value: v.nmcSince || '', 'data-testid': 'walk-nmcsince', onChange: (e) => { v.nmcSince = e.target.value; commit({ render: false }); draw(); } }), vw.days != null ? `${vw.days} days NMC` : (vw.status === 'FMC' ? 'Not NMC' : '')));
+      body.append(h('div', { class: 'field' }, h('span', { class: 'lbl' }, 'NMC since'), h('button', { type: 'button', class: 'select-btn dt-btn', 'data-testid': 'walk-nmcsince', 'data-value': v.nmcSince || '', onClick: async () => { const r = await pickDate({ title: 'NMC since', value: v.nmcSince || '' }); if (r === undefined) return; v.nmcSince = r; commit({ render: false }); draw(); } }, h('span', { class: 'val' }, v.nmcSince ? fmtDate(v.nmcSince) : 'Tap to set')), h('small', { class: 'hint' }, vw.days != null ? `${vw.days} days NMC` : (vw.status === 'FMC' ? 'Not NMC' : ''))));
       body.append(h('p', { class: 'muted' }, v.walkAt ? `Last seen ${new Date(v.walkAt).toLocaleString()}` : 'Not seen yet'));
       const save = (next) => {
         v.walkAt = new Date().toISOString(); const l = (v.location || '').trim(); if (l) { st.ui.lastLocations = [l, ...(st.ui.lastLocations || []).filter((x) => x !== l)].slice(0, 12); }

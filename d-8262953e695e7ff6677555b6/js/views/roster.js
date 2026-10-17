@@ -52,7 +52,7 @@ async function exportRosterCsv() {
 export function openPerson(id) {
   const st = S(); const existing = id ? st.roster.find((p) => p.id === id) : null;
   const nextId = () => { let n = st.roster.length + 1, i; do { i = 'P' + String(n++).padStart(3, '0'); } while (st.roster.some((p) => p.id.toUpperCase() === i)); return i; };
-  const d = existing ? JSON.parse(JSON.stringify(existing)) : { id: nextId(), status: 'Active', platoon: '', rank: '', last: '', first: '', licExp: '', licExpRaw: '', ammo: false, hazmat: false, nvd: false, gcssId: '', note: '', quals: [] };
+  const d = existing ? JSON.parse(JSON.stringify(existing)) : { id: nextId(), status: 'Active', platoon: '', rank: '', last: '', first: '', licExp: '', licExpRaw: '', ammo: false, hazmat: false, nvd: false, gcssId: '', licNo: '', note: '', quals: [] };
   openSheet({ title: existing ? personLabel(existing) : 'Add person', tall: true, build: (b, api) => {
     const inp = (label, key, o = {}) => field(label, h('input', { type: o.type || 'text', value: d[key] || '', autocomplete: 'off', autocapitalize: o.cap || 'words', 'data-testid': 'p-' + key, ...(o.attrs || {}), onInput: (e) => { d[key] = e.target.value; } }), o.hint);
     const idIn = h('input', { type: 'text', value: d.id, disabled: !!existing, autocomplete: 'off', 'data-testid': 'p-id', onInput: (e) => { d.id = e.target.value.trim(); } });
@@ -63,6 +63,7 @@ export function openPerson(id) {
     b.append(field('ID (permanent key used by trips)', idIn, 'Use a local ID like P001. Do NOT use a DODID or SSN.'), h('div', { class: 'grid2' }, inp('Rank', 'rank', { cap: 'characters' }), field('Status', status), inp('Last name', 'last'), inp('First name', 'first')), field('Platoon', plat));
     b.append(field('License expiration', lic, d.licExpRaw ? `Unreadable value "${d.licExpRaw}" - pick the date` : 'Checked against the trip date'));
     b.append(field('GCSS-Army ID (text)', h('input', { type: 'text', value: d.gcssId || '', autocomplete: 'off', autocapitalize: 'characters', 'data-testid': 'p-gcssId', onInput: (e) => { d.gcssId = e.target.value.trim(); } }), 'Needed to put this Soldier on a dispatch in GCSS-Army'));
+    b.append(field('Operator license no. (optional, typed by hand)', h('input', { type: 'text', value: d.licNo || '', autocomplete: 'off', autocapitalize: 'characters', 'data-testid': 'p-licNo', onInput: (e) => { d.licNo = e.target.value.trim(); } }), 'Shown on trips next to the driver. Not the GCSS-Army ID and never read from an import file.'));
     const flags = h('div', { class: 'row' }); FLAG_FIELDS.forEach((f) => flags.append(toggle(f.toUpperCase(), !!d[f], (v) => { d[f] = v; })));
     b.append(flags);
     const quals = allQualNames(st.settings); [...(d.quals || [])].forEach((q) => { if (!quals.some((k) => normKeyText(k) === normKeyText(q))) quals.push(q); });

@@ -91,3 +91,11 @@ input[type=file] { width: 100%; padding: 10px 0; font-size: 15px; }
 @media (max-width: 380px) { .tiles { grid-template-columns: repeat(2, 1fr); } .cgrid { grid-template-columns: repeat(2, 1fr); } }
 @media print { .tabbar, .topbar, .toast { display: none; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+/* in-app date / time pickers */
+.pk-disp { font-size: 34px; font-weight: 800; text-align: center; letter-spacing: 1px; padding: 6px 0 10px; font-variant-numeric: tabular-nums; }
+.pk-row { display: flex; gap: 6px; justify-content: center; align-items: center; flex-wrap: wrap; margin: 6px 0; } .pk-month { font-weight: 700; min-width: 140px; text-align: center; }
+.pk-lbl { font-size: 12px; font-weight: 700; color: var(--muted); margin: 10px 0 4px; }
+.pk-grid { display: grid; gap: 6px; } .pk-hours { grid-template-columns: repeat(6, 1fr); } .pk-mins { grid-template-columns: repeat(6, 1fr); }
+.pk-cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; } .pk-dow { text-align: center; font-size: 11px; font-weight: 700; color: var(--muted); padding: 2px 0; }
+.pk-cell { appearance: none; min-height: 44px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; touch-action: manipulation; } .pk-cell.today { border-color: var(--accent); } .pk-cell.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.pk-text { width: 100%; box-sizing: border-box; min-height: 44px; font-size: 18px; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
