@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-src blob:; form-action 'none'; base-uri 'none'">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f4f5f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14170f" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Dispatch">
+<meta name="format-detection" content="telephone=no">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/app.css">
+<title>Dispatch</title>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div id="app">
+  <header class="topbar" role="banner">
+    <h1 id="page-title">Today</h1>
+    <span id="top-actions"></span>
+  </header>
+  <main id="main" tabindex="-1" aria-live="off"></main>
+  <nav class="tabbar" aria-label="Main">
+    <a href="#today" data-tab="today"><span class="ico" aria-hidden="true">◉</span><span>Today</span></a>
+    <a href="#dispatch" data-tab="dispatch"><span class="ico" aria-hidden="true">➤</span><span>Dispatch</span></a>
+    <a href="#fleet" data-tab="fleet"><span class="ico" aria-hidden="true">▣</span><span>Fleet</span></a>
+    <a href="#roster" data-tab="roster"><span class="ico" aria-hidden="true">☰</span><span>Roster</span></a>
+    <a href="#more" data-tab="more"><span class="ico" aria-hidden="true">•••</span><span>More</span></a>
+  </nav>
+</div>
+<noscript>This app needs JavaScript. Nothing is sent anywhere; all data stays on this device.</noscript>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
