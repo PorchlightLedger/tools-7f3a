@@ -15,15 +15,15 @@ export const SLANT_ROWS = [
   { label: 'LMTV', models: ['M1078A1P2WW', 'M1078A1P2WOW'] },
   { label: 'Water trailer', models: ['M149A2'] },
   { label: 'Dump truck', models: ['M1157A1P2WW', 'M1157A1P2WOW'] },
-  { label: 'Dozer', models: [] }, // no dozer model in the fleet today (TYPE II is counted as Grader below); add the model key here when one arrives
+  { label: 'Dozer', models: [] }, // no dozer model in the fleet today (TYPE II is counted as Type 2 / D6 below); add the model key here when one arrives
   { label: 'Skid steer', models: ['M400W'] },
   { label: 'HEMI', models: ['TP I HMEE-I'] },
   { label: 'Loader', models: ['924HLTLDR'] },
-  { label: 'Deuce', models: ['DV100'] },
+  { label: 'DV100 / Deuce', models: ['DV100'] },
   { label: 'Tractor', models: ['M1088A1'] },
   { label: '40-ton', models: ['M983A4LET'] }, // HEMTT tractor
   { label: '40-ton trailer', models: ['M870A3'] },
-  { label: 'Grader', models: ['TYPE II'] },
+  { label: 'Type 2 / D6', models: ['TYPE II'] },
   { label: 'HEMTT wrecker', models: ['M984A4'], names: [[/\bHEMTT\b/i, /\bWRECKER\b/i]] },
   { label: 'MTV wrecker', models: ['M1089A1P2'], names: [[/\bMTV\b/i, /\bWRECKER\b/i]] },
   { label: 'HEMTT fueler', models: ['M978A4'], names: [[/\bHEMTT\b/i, /\b(FUELER|FUELING|FUEL SERVICING|TANKER)\b/i]] },
