@@ -2,6 +2,8 @@
 export const pad = (n, w = 2) => String(n).padStart(w, '0');
 export const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
+/** local calendar date of an ISO timestamp (a stored UTC timestamp after 8 PM Eastern is already "tomorrow" in UTC) */
+export function localDayOf(iso) { const d = new Date(iso); return iso && !Number.isNaN(d.getTime()) ? todayISO(d) : ''; }
 export function todayISO(now = new Date()) {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }

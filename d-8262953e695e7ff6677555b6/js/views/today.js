@@ -1,7 +1,7 @@
 import { store, S, getCtx, go } from '../ctx.js';
 import { h } from '../dom.js';
-import { fleetCounts, pct, evaluateTrip, gcssIdStats, isActiveTrip, vehicleView, personAvailable, licenseState, asOfDate, tripSummaryMessage, personLabel } from '../rules.js';
-import { daysBetween, fmtDate, todayISO } from '../util.js';
+import { tripEntries, fleetCounts, pct, evaluateTrip, gcssIdStats, isActiveTrip, vehicleView, personAvailable, licenseState, asOfDate, tripSummaryMessage, personLabel } from '../rules.js';
+import { daysBetween, fmtDate, todayISO, localDayOf } from '../util.js';
 import { statusChip, resultChip, tripTimes, nameWithId, piiNote, emptyCard, btn } from '../ui.js';
 import { openTripEditor } from './dispatch.js';
 import { chalkSummary, chalkLabel } from '../chalk.js';
@@ -33,15 +33,15 @@ export function renderToday(root) {
     const red = st.fleet.filter((v) => vehicleView(v, ctx).aging === 'red').length; if (red) att.push(['bad', `${red} vehicle${red > 1 ? 's' : ''} NMC ≥ ${st.settings.agingRed} days`, '#fleet/NMC']);
     const unk = c.unknown; if (unk) att.push(['warn', `${unk} vehicle${unk > 1 ? 's' : ''} with no / unknown status`, '#fleet/UNKNOWN']);
     const um = st.fleet.filter((v) => !vehicleView(v, ctx).mapped && vehicleView(v, ctx).status !== 'TURNED IN').length; if (um) att.push(['warn', `${um} vehicle${um > 1 ? 's' : ''} with a model missing from the Type map (cannot be dispatched)`, '#more/settings']);
-    const walked = st.fleet.filter((v) => (v.walkAt || '').slice(0, 10) === todayISO()).length; att.push(['info', `Walk-around today: ${walked} of ${c.onHand} seen`, '#more/walk']);
+    const walked = st.fleet.filter((v) => localDayOf(v.walkAt) === todayISO()).length; att.push(['info', `Walk-around today: ${walked} of ${c.onHand} seen`, '#more/walk']);
   }
   if (att.length) root.append(h('section', { class: 'card' }, h('h3', null, 'Needs attention'), h('ul', { class: 'att' }, att.map(([k, text, href]) => h('li', null, h('a', { href, class: 'att-' + k, 'data-testid': 'att-item' }, h('span', { class: 'dot ' + k, 'aria-hidden': 'true' }), text))))));
   // trips
   const sec = h('section', { class: 'card' }, h('h3', null, `Active trips (${trips.length})`));
   if (!trips.length) sec.append(h('p', { class: 'muted' }, 'No planned or outbound trips.'), btn('New trip', () => go('#dispatch/new'), 'primary'));
   trips.sort((a, b) => (a.t.dateOut || '9').localeCompare(b.t.dateOut || '9') || (a.t.timeOut || '').localeCompare(b.t.timeOut || '')).slice(0, 12).forEach(({ t, ev }) => {
-    const v = ctx.fleetByKey.get(t.vehicle); const d = ctx.rosterById.get(t.driver);
-    sec.append(h('button', { class: 'trip-row', type: 'button', onClick: () => openTripEditor(t.id), 'data-testid': 'today-trip' }, h('div', { class: 'tr-top' }, h('b', null, `#${t.no || ''} ${v ? v.short : 'no vehicle'}`), h('span', { class: 'chip' }, t.status), resultChip(ev.result)), h('div', { class: 'tr-sub' }, tripTimes(t), ' · ', t.dest || 'no destination'), h('div', { class: 'tr-sub' }, 'Driver: ', nameWithId(d, t.driver)), (ev.blockers.length || ev.warnings.length) ? h('div', { class: 'tr-msg ' + (ev.blockers.length ? 'bad' : 'warn') }, tripSummaryMessage(ev)) : null));
+    const es = tripEntries(t); const v = ctx.fleetByKey.get((es[0] || {}).vehicle); const d = ctx.rosterById.get((es[0] || {}).driver); const label = es.length > 1 ? `${v ? v.short : 'no vehicle'} +${es.length - 1} more` : v ? v.short : 'no vehicle';
+    sec.append(h('button', { class: 'trip-row', type: 'button', onClick: () => openTripEditor(t.id), 'data-testid': 'today-trip' }, h('div', { class: 'tr-top' }, h('b', null, `#${t.no || ''} ${label}`), h('span', { class: 'chip' }, t.status), resultChip(ev.result)), h('div', { class: 'tr-sub' }, tripTimes(t), ' · ', t.dest || 'no destination'), h('div', { class: 'tr-sub' }, es.length > 1 ? `${es.length} vehicles · ${es.filter((e) => e.driver).length} drivers` : ['Driver: ', nameWithId(d, (es[0] || {}).driver)]), (ev.blockers.length || ev.warnings.length) ? h('div', { class: 'tr-msg ' + (ev.blockers.length ? 'bad' : 'warn') }, tripSummaryMessage(ev)) : null));
   });
   root.append(sec);
   if (st.chalkPlan.chalks.length) {

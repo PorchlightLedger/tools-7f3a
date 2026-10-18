@@ -21,12 +21,14 @@ export const CIRCLED_X_PREFIX = 'CLEARED FOR LIMITED OPERATIONS - ';
 
 /** UIC printed on the form: the per-form override when set, otherwise the Settings "Unit UIC" (so a unit move updates every form without an override). */
 export function formUic(form, settings = {}) { return form.uicOverride ? String(form.uic || '').trim() : String(settings.unitUic || '').trim(); }
-export function newForm(vehicle, { settings = {}, tmByType = {}, typeName = '', tm = null, now = new Date() } = {}) {
+export function newForm(vehicle, { settings = {}, tmByType = {}, typeName = '', tm = null, now = new Date(), link = {} } = {}) {
   const tms = (tmByType && typeName && tmByType[typeName]) || [];
   const ids = vehicle ? vehIds(vehicle) : { vin: '', lin: '' };
   const auto = tm && tm.resolved ? tmPubs(tm, 2) : null;
+  // the vehicle's own UIC (GCSS column) fills the form when it differs from the Settings UIC (a per-form override; Settings stays the default)
+  const vUic = vehicle ? String(vehicle.uic || '').trim() : ''; const sUic = String((settings && settings.unitUic) || '').trim(); const uicOv = !!vUic && vUic !== sUic;
   return {
-    id: uid('f'), vehicleKey: vehicle ? vehicle.key : '', date: todayISO(now), uic: '', uicOverride: false, adminNumber: vehicle ? vehicle.short || vehicle.bumper : '', serial: ids.vin, lin: ids.lin,
+    id: uid('f'), sv: 2, vehicleKey: vehicle ? vehicle.key : '', vehicleId: vehicle ? vehicle.vid || '' : '', tripId: link.tripId || '', entryId: link.entryId || '', date: todayISO(now), uic: uicOv ? vUic : '', uicOverride: uicOv, adminNumber: vehicle ? vehicle.short || vehicle.bumper : '', serial: ids.vin, lin: ids.lin,
     model: vehicle ? vehicle.model || '' : '', registration: vehicle ? vehicle.registration || '' : '', noun: vehicle ? vehicle.desc || '' : '', nsn: vehicle ? vehicle.nsn || '' : '',
     typeInsp: 'B', readingType: 'M', reading: '', pmcsRef: tm && tm.resolved && tm.pmcs ? tm.pmcs : '',
     pubs: auto || [0, 1].map((i) => ({ tm: (tms[i] && tms[i].tm) || '', date: (tms[i] && tms[i].date) || '', change: (tms[i] && tms[i].change) || '' })),

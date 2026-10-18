@@ -1,5 +1,5 @@
 // GCSS-Army equipment export: parsing (CSV / pasted text / xlsx rows) and merge into the fleet
-import { clean, normKeyText, parseDateLoose, todayISO } from './util.js';
+import { clean, normKeyText, parseDateLoose, todayISO, uid } from './util.js';
 import { parseDelimited } from './csv.js';
 import { normBumper, shortBumper, vehicleStatus, modelLookup, modelInfo, turnedInKeys, VEHICLE_STATUSES } from './rules.js';
 
@@ -59,7 +59,7 @@ export function parseGcssRows(rows, settings) {
   return { vehicles, issues, header: map };
 }
 /** fields the user edits by hand; never overwritten by a GCSS import */
-export const USER_FIELDS = ['vinSet', 'linSet', 'platoonSet', 'tmSet'];
+export const USER_FIELDS = ['vinSet', 'linSet', 'platoonSet', 'tmSet', 'manual'];
 /** most common UIC column value among the parsed vehicles: {uic, count, total, distinct} or null */
 export function commonUic(vehicles) {
   const c = new Map(); let total = 0; for (const v of vehicles || []) { const u = clean(v.uic); if (!u) continue; total++; c.set(u, (c.get(u) || 0) + 1); }
@@ -82,7 +82,7 @@ export function mergeGcss(existing, parsed, settings, { exportDate = '', now = n
     if (old) {
       used.add(old.key);
       const prevStatus = vehicleStatus(old, settings).status;
-      rec = { ...old, ...nv, key: nv.key, notes: old.notes || '', location: old.location || '', nmcSince: old.nmcSince || '', override: old.override || null, walkAt: old.walkAt || '', inExport: true, lastImport: stamp };
+      rec = { ...old, ...nv, key: nv.key, vid: old.vid || uid('v'), notes: old.notes || '', location: old.location || '', nmcSince: old.nmcSince || '', override: old.override || null, walkAt: old.walkAt || '', inExport: true, lastImport: stamp };
       for (const k of USER_FIELDS) if (old[k] !== undefined) rec[k] = old[k]; // manual VIN / LIN / platoon / TM edits survive a re-import
       if (!nv.lin && old.lin) rec.lin = old.lin;
       const newStatus = vehicleStatus(rec, settings).status;
@@ -99,13 +99,13 @@ export function mergeGcss(existing, parsed, settings, { exportDate = '', now = n
       } else if (newStatus === st2 && JSON.stringify([old.desc, old.model, old.serial, old.funcLoc, old.remark, old.gcss, old.gcssDesc, old.asset, old.lin]) === JSON.stringify([nv.desc, nv.model, nv.serial, nv.funcLoc, nv.remark, nv.gcss, nv.gcssDesc, nv.asset, nv.lin || old.lin])) rep.unchanged++;
       rep.updated++;
     } else {
-      rec = { ...nv, notes: '', location: '', nmcSince: '', override: null, walkAt: '', inExport: true, lastImport: stamp };
+      rec = { ...nv, vid: uid('v'), notes: '', location: '', nmcSince: '', override: null, walkAt: '', inExport: true, lastImport: stamp };
       const s0 = vehicleStatus(rec, settings).status; if (['NMCM', 'NMCS', 'NMC-X'].includes(s0)) { rec.nmcSince = ''; }
       rep.added.push(nv.short);
     }
     out.push(rec);
   }
-  for (const v of existing) if (!used.has(v.key)) { out.push({ ...v, inExport: false, gcss: '' }); if (!tk.has(v.key)) rep.missing.push(v.short || v.bumper); }
+  for (const v of existing) if (!used.has(v.key)) { out.push({ ...v, inExport: false, gcss: '' }); if (!tk.has(v.key) && !v.manual) rep.missing.push(v.short || v.bumper); }
   for (const v of out) {
     const s = vehicleStatus(v, settings);
     if (s.status === 'NMC-X') { rep.xVehicles.push(v.short); if (s.flags.some((f) => f.startsWith('X VEHICLE BUT'))) rep.xButFmc.push(v.short); }

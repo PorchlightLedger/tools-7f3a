@@ -2,7 +2,7 @@ import { S, getCtx, commit, go } from '../ctx.js';
 import { h, openSheet, toast, field, segmented, clear, pick, safeAppend } from '../dom.js';
 import { vehicleView, VEHICLE_STATUSES, isNMC, idLine } from '../rules.js';
 import { pickDate } from '../pickers.js';
-import { todayISO, fmtDate } from '../util.js';
+import { todayISO, fmtDate, localDayOf } from '../util.js';
 import { statusChip, chips, btn, emptyCard } from '../ui.js';
 import { openFormEditorFor } from './form.js';
 
@@ -13,7 +13,7 @@ export function renderWalk(root, rest, top) {
   root.append(h('p', { class: 'hint' }, 'Walk the motor pool: tap a vehicle, mark its status, add the fault, location and NMC-since date. Changes are local and flagged until GCSS-Army agrees.'));
   if (!st.fleet.length) { root.append(emptyCard('No fleet loaded', 'Import the GCSS export first.', btn('Import GCSS', () => go('#fleet/import'), 'primary'))); return 'Walk-around'; }
   const all = st.fleet.map((v) => ({ v, vw: vehicleView(v, ctx) })).filter((x) => x.vw.status !== 'TURNED IN').sort((a, b) => a.v.key.localeCompare(b.v.key, 'en', { numeric: true }));
-  const seen = (v) => (v.walkAt || '').slice(0, 10) === today;
+  const seen = (v) => localDayOf(v.walkAt) === today;
   const done = all.filter((x) => seen(x.v)).length;
   root.append(h('div', { class: 'card' }, h('b', { 'data-testid': 'walk-progress' }, `${done} of ${all.length} seen today`), h('div', { class: 'bar', role: 'presentation' }, (() => { const i = h('i', { class: 'bar-fill' }); i.style.width = Math.round((done / Math.max(1, all.length)) * 100) + '%'; return i; })())));
   root.append(h('input', { type: 'search', class: 'search', placeholder: 'Search bumper / type…', value: query, 'aria-label': 'Search vehicles', 'data-testid': 'walk-search', onInput: (e) => { query = e.target.value; draw(); } }),

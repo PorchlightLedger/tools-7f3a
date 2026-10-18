@@ -7,19 +7,19 @@ import { shareOrDownload, mailtoLink } from '../backup.js';
 import { btn } from '../ui.js';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-export function openExportSheet() {
-  const st = S(); let scope = 'active';
+export function openExportSheet({ tripId = '' } = {}) {
+  const st = S(); let scope = tripId ? 'trip' : 'active';
   openSheet({ title: 'Share dispatch spreadsheet', tall: false,
     build: (b, api) => {
       const info = h('div', { 'data-testid': 'export-info' });
       const draw = () => {
-        const trips = st.trips.filter((t) => (scope === 'all') || (scope === 'active' && isActiveTrip(t)) || (scope === 'today' && (t.dateOut === todayISO() || t.dateBack === todayISO())));
+        const trips = st.trips.filter((t) => (scope === 'trip' && t.id === tripId) || (scope === 'all') || (scope === 'active' && isActiveTrip(t)) || (scope === 'today' && (t.dateOut === todayISO() || t.dateBack === todayISO())));
         clear(info); info.append(h('p', null, `${trips.length} trip${trips.length === 1 ? '' : 's'} will be in the file.`),
           st.settings.recipient ? h('p', { class: 'hint' }, 'Email recipient (Settings): ', h('b', null, st.settings.recipient)) : h('p', { class: 'hint warn' }, 'No email recipient set (Settings). You will pick one in the share sheet / email app.'));
         return trips;
       };
       b.append(h('p', { class: 'hint' }, 'The .xlsx is built on this phone, offline. Nothing is uploaded. It contains names and may be PII / CUI - send it only per your SOP.'));
-      b.append(field('Which trips', segmented([['active', 'Active'], ['today', 'Today'], ['all', 'All']], scope, (v) => { scope = v; draw(); }, { label: 'Which trips' })));
+      if (tripId) b.append(h('p', { class: 'hint' }, 'Sharing this one trip (one row per vehicle).')); else b.append(field('Which trips', segmented([['active', 'Active'], ['today', 'Today'], ['all', 'All']], scope, (v) => { scope = v; draw(); }, { label: 'Which trips' })));
       b.append(toggle('Add Fleet Status sheet', st.settings.xlsxIncludeFleet, (v) => { st.settings.xlsxIncludeFleet = v; commit({ render: false }); }));
       b.append(toggle('Add Roster sheet (personal data!)', st.settings.xlsxIncludeRoster, (v) => { st.settings.xlsxIncludeRoster = v; commit({ render: false }); }, 'Off by default. Names, license dates and GCSS IDs.'));
       b.append(info); draw();

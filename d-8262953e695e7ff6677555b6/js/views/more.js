@@ -1,7 +1,8 @@
 import { S, store, commit, go, APP_VERSION, getCtx } from '../ctx.js';
 import { h, openSheet, toast, field, segmented, toggle, confirmBox, typedConfirm, clear, readFileText, closeAllSheets } from '../dom.js';
-import { DEFAULT_MODEL_MAP, DEFAULT_PERSON_STATUSES, normBumper, platoonText, parsePlatoonText, platoonByRules, platoonRuleErrors, shortBumper } from '../rules.js';
-import { exportSettings, parseSettingsJson, applySettings, settingsFileName } from '../settingsio.js';
+import { DEFAULT_MODEL_MAP, DEFAULT_PERSON_STATUSES, isXBumper, normBumper, platoonText, parsePlatoonText, platoonByRules, platoonRuleErrors, shortBumper } from '../rules.js';
+import { exportSettings, parseSettingsJson, applySettings, applyModelPhotos, settingsFileName } from '../settingsio.js';
+import { photoTotals, fmtBytes, clearAllPhotos, dropPhotoDb, reconcilePhotos } from '../photos.js';
 import { openTmTable } from './tmedit.js';
 import { makeBackup, parseBackup, backupFileName, shareOrDownload } from '../backup.js';
 import { openExportSheet } from './exporter.js';
@@ -55,18 +56,22 @@ export function openSettings() {
     const map = ta('Type map: GCSS Model number | Type name | Qualification (exact name or NONE) | Vehicle / Towed / Mounted', s.modelMap.map((m) => `${m.model} | ${m.type} | ${m.qual} | ${m.cls}`).join('\n'), 12, 'Every GCSS model must be listed. A blank qualification or an unlisted model makes that vehicle NO-GO (fail closed).', 's-typemap');
     b.append(h('h3', null, 'Lists'), turned.el, pref.el, stat.el, plt.el, xq.el, h('h3', null, 'Type map'), map.el,
       h('div', { class: 'row' }, btn('Reset type map to defaults', async () => { if (await confirmBox({ title: 'Reset type map?', message: 'Replaces your edits with the built-in list.', okText: 'Reset', danger: true })) { map.t.value = DEFAULT_MODEL_MAP.map((m) => `${m.model} | ${m.type} | ${m.qual} | ${m.cls}`).join('\n'); } }), btn('Edit 5988-E fault presets', () => openPresetEditor())));
+    const xToggle = toggle('Exclude X (permanent NMC) vehicles from platoons', s.platoonExcludeX !== false, (v) => { s.platoonExcludeX = v; commit({ render: false }); upd(); }, 'On (default): a bumper ending in digit + X (A-362X) shows platoon "—", is not counted in platoon chips / filters, and stays in the fleet list and dispatch log. A platoon you set by hand on the vehicle still wins.');
     const prules = ta('Platoon rules for vehicles: Platoon name | pattern (first match wins, one per line)', platoonText(s.platoonRules), 6, 'Patterns: num<100, num 100-199, 1000-1999 (number in the bumper) · re:regex · or a wildcard like A-1##* (* any text, # one digit). Blank = no platoons.', 's-platoonRules');
     const ptest = h('input', { type: 'text', placeholder: 'try a bumper, e.g. A-103X', autocomplete: 'off', autocapitalize: 'characters', 'data-testid': 's-platoon-test', 'aria-label': 'Test a bumper against the platoon rules' }); const pout = h('p', { class: 'hint', 'data-testid': 's-platoon-result' }, '');
-    const upd = () => { const tmp = { platoonRules: parsePlatoonText(prules.t.value) }; const errs = platoonRuleErrors(tmp); const v = ptest.value.trim(); pout.textContent = (errs.length ? 'Rule problem: ' + errs.join('; ') + '. ' : '') + (v ? `${shortBumper(v, s.prefixes, s.unitUic)} → ${platoonByRules(shortBumper(v, s.prefixes, s.unitUic), tmp) || '(no platoon)'}` : ''); };
+    const upd = () => { const tmp = { platoonRules: parsePlatoonText(prules.t.value) }; const errs = platoonRuleErrors(tmp); const v = ptest.value.trim(); pout.textContent = (errs.length ? 'Rule problem: ' + errs.join('; ') + '. ' : '') + (v ? (s.platoonExcludeX !== false && isXBumper(v, s.prefixes, s.unitUic) ? `${shortBumper(v, s.prefixes, s.unitUic)} → — (X vehicle, excluded from platoons)` : `${shortBumper(v, s.prefixes, s.unitUic)} → ${platoonByRules(shortBumper(v, s.prefixes, s.unitUic), tmp) || '(no platoon)'}`) : ''); };
     prules.t.addEventListener('input', upd); ptest.addEventListener('input', upd);
-    b.append(h('h3', null, 'Platoons (vehicles)'), prules.el, field('Test', ptest), pout);
+    b.append(h('h3', null, 'Platoons (vehicles)'), xToggle, prules.el, field('Test', ptest), pout);
+    { const tot = h('p', { class: 'hint', 'data-testid': 's-photo-total' }); const upP = () => { const t = photoTotals(); tot.textContent = t.count ? `${t.count} photo${t.count === 1 ? '' : 's'} (${t.vehicle} vehicle, ${t.model} model) · ${fmtBytes(t.bytes)} stored on this device` : 'No photos stored.'; }; upP();
+      b.append(h('h3', null, 'Photos'), tot, h('p', { class: 'hint' }, 'One photo per vehicle / trailer, and one per model, stored only on this device (not in backups or the spreadsheet). The Fleet detail page sets them.'),
+        h('div', { class: 'row' }, btn('Delete all photos', async () => { if (!photoTotals().count) { toast('No photos to delete.'); return; } if (await confirmBox({ title: 'Delete all photos?', message: 'Removes every vehicle and model photo from this phone. Fleet data is not touched.', okText: 'Delete photos', danger: true })) { await clearAllPhotos(); upP(); commit(); toast('All photos deleted'); } }, 'danger small', { 'data-testid': 's-photos-delete' }))); }
     // settings file: import / export
     const sfile = h('input', { type: 'file', 'aria-label': 'Choose a settings file (.json)', 'data-testid': 's-import-file' }); const smsg = h('div', { 'data-testid': 's-import-msg' });
     sfile.addEventListener('change', async () => {
       const f = sfile.files[0]; if (!f) return; clear(smsg);
       try { const parsed = parseSettingsJson(await readFileText(f)); if (parsed.problems.length) throw new Error('Cannot import: ' + parsed.problems.join('; '));
-        const keys = Object.keys(parsed.patch); const ok = await confirmBox({ title: 'Import settings?', message: `Settings in this file: ${keys.join(', ') || 'none'}${parsed.ignored.length ? `\nIgnored: ${parsed.ignored.join(', ')}` : ''}\n\nIt replaces those settings here. Your roster, fleet, trips and worksheets are not touched.`, okText: 'Import settings' });
-        if (ok) { const ch = applySettings(st, parsed); commit(); api.close(); toast(`Settings imported (${ch.length} changed)`); setTimeout(() => openSettings(), 50); }
+        const keys = Object.keys(parsed.patch); if (parsed.modelPhotos) keys.push(`model photos (${Object.keys(parsed.modelPhotos).length})`); const ok = await confirmBox({ title: 'Import settings?', message: `Settings in this file: ${keys.join(', ') || 'none'}${parsed.ignored.length ? `\nIgnored: ${parsed.ignored.join(', ')}` : ''}\n\nIt replaces those settings here. Your roster, fleet, trips and worksheets are not touched.`, okText: 'Import settings' });
+        if (ok) { const ch = applySettings(st, parsed); const ph = await applyModelPhotos(parsed); commit(); api.close(); toast(`Settings imported (${ch.length} changed${parsed.modelPhotos ? `, ${ph.added} model photo${ph.added === 1 ? '' : 's'} added${ph.kept ? `, ${ph.kept} kept` : ''}` : ''})`); setTimeout(() => openSettings(), 50); }
       } catch (e) { smsg.append(h('div', { class: 'card bad', role: 'alert', 'data-testid': 's-import-error' }, e.message)); }
       sfile.value = '';
     });
@@ -99,13 +104,13 @@ export function openBackup() {
       const f = file.files[0]; if (!f) return; clear(msg);
       try { const state = parseBackup(await readFileText(f));
         const ok = await confirmBox({ title: 'Restore this backup?', message: `It contains ${state.roster.length} people, ${state.fleet.length} vehicles, ${state.trips.length} trips. This REPLACES everything now in the app.`, okText: 'Restore (replace all)', danger: true });
-        if (ok) { await store.replace(state); closeAllSheets(); toast('Backup restored'); }
+        if (ok) { await store.replace(state); await reconcilePhotos(state.fleet); closeAllSheets(); toast('Backup restored'); }
       } catch (e) { msg.append(h('div', { class: 'card bad', role: 'alert', 'data-testid': 'backup-error' }, e.message)); }
       file.value = '';
     });
     b.append(h('h3', null, 'Import backup'), field('Backup file (.json)', file), msg);
-    b.append(h('h3', null, 'Wipe all data'), h('p', { class: 'hint' }, 'Deletes the roster, fleet, trips, forms and settings from this phone. The app itself stays installed. Make a backup first if you may need the data.'),
-      h('button', { class: 'btn danger wide', type: 'button', 'data-testid': 'wipe', onClick: async () => { if (await typedConfirm({ title: 'Wipe ALL data?', message: 'This permanently deletes everything stored by this app on this device. It cannot be undone.', word: 'WIPE', okText: 'Wipe everything' })) { await store.wipe(); closeAllSheets(); go('#today'); toast('All data wiped'); } } }, 'Wipe all data…'));
+    b.append(h('h3', null, 'Wipe all data'), h('p', { class: 'hint' }, 'Deletes the roster, fleet, trips, forms, photos and settings from this phone. The app itself stays installed. Make a backup first if you may need the data.'),
+      h('button', { class: 'btn danger wide', type: 'button', 'data-testid': 'wipe', onClick: async () => { if (await typedConfirm({ title: 'Wipe ALL data?', message: 'This permanently deletes everything stored by this app on this device. It cannot be undone.', word: 'WIPE', okText: 'Wipe everything' })) { await dropPhotoDb(); await store.wipe(); closeAllSheets(); go('#today'); toast('All data wiped'); } } }, 'Wipe all data…'));
     api.foot.append(h('button', { class: 'btn', type: 'button', onClick: () => api.close() }, 'Close'));
   } });
 }

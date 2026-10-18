@@ -1,7 +1,7 @@
 // Build the dispatch-log workbook (+ optional fleet status / roster) ON DEVICE
 import { buildXlsx, ST } from './xlsxwrite.js';
-import { buildContext, evaluateTrip, vehicleView, fleetCounts, pct, personName, personLabel, tripSummaryMessage, allQualNames, isActivePerson, gcssIdStats, licenseState, asOfDate, hasQual, TRIP_STATUSES } from './rules.js';
-import { chalkSummary, chalkLabel } from './chalk.js';
+import { tripEntries, buildContext, evaluateTrip, vehicleView, fleetCounts, pct, personName, personLabel, tripSummaryMessage, allQualNames, isActivePerson, gcssIdStats, licenseState, asOfDate, hasQual, TRIP_STATUSES } from './rules.js';
+import { chalkSummary, chalkLabel, chalkOf } from './chalk.js';
 import { resolveTm, TM_NOT_FOUND } from './tmdata.js';
 import { fmtDate, normKeyText, parseDateLoose } from './util.js';
 
@@ -10,18 +10,24 @@ export function buildDispatchWorkbook(state, { includeFleet = true, includeRoste
   const ctx = buildContext({ settings: state.settings, fleet: state.fleet, roster: state.roster, trips: state.trips, now });
   const P = (id) => ctx.rosterById.get(id); const V = (k) => ctx.fleetByKey.get(k);
   const trips = [...state.trips].filter((t) => !tripIds || tripIds.includes(t.id)).sort((a, b) => (a.dateOut || '9999').localeCompare(b.dateOut || '9999') || (a.timeOut || '').localeCompare(b.timeOut || '') || (+a.chalk || 999) - (+b.chalk || 999) || (a.no || 0) - (b.no || 0));
-  const head = ['Trip #', 'Chalk', 'Status', 'Date out', 'Time out', 'Date back', 'Time back', 'Destination / mission', 'Vehicle', 'Platoon', 'LIN', 'VIN / Serial', 'Type', 'Driver', 'Driver GCSS-Army ID', 'Driver license no.', 'TC / A-driver', 'TC GCSS-Army ID', 'Pax', 'Towed / trailers', 'Dispatcher', 'PMCS done', 'GO / NO-GO', 'Why (first reason)', 'All reasons', 'Notes'];
+  const head = ['Trip #', 'Chalk', 'Status', 'Date out', 'Time out', 'Date back', 'Time back', 'Destination / mission', 'Vehicle', 'Platoon', 'LIN', 'VIN / Serial', 'Type', 'Driver', 'Driver GCSS-Army ID', 'Driver license no.', 'TC / A-driver', 'TC GCSS-Army ID', 'Pax', 'Towed / trailers', 'Dispatcher', 'PMCS done', 'GO / NO-GO', 'Why (first reason)', 'All reasons', 'Notes', 'Veh #', 'Trip GO / NO-GO'];
   const rows = [head];
+  // one row per vehicle entry; the trip header (number, chalk, status, times, destination, dispatcher, notes) repeats on every row
   for (const t of trips) {
-    const ev = evaluateTrip(t, ctx); const v = V(t.vehicle); const d = P(t.driver), c = P(t.tc); const vw = v ? vehicleView(v, ctx) : null;
-    const rs = ev.result === 'GO' ? 'go' : ev.result === 'WARN' ? 'warn' : ev.result === 'NO-GO' ? 'nogo' : undefined;
-    rows.push([t.no || '', t.chalk || '', t.status, cell(t.dateOut, 0, 'date'), t.timeOut || '', cell(t.dateBack, 0, 'date'), t.timeBack || '', t.dest || '', v ? (v.short || v.bumper) : t.vehicle || '', vw ? vw.platoon : '', vw ? vw.lin : '', vw ? vw.vin : '', vw ? vw.type : '',
-      d ? personLabel(d) : t.driver || '', d ? d.gcssId || '' : '', d ? d.licNo || '' : '', c ? personLabel(c) : t.tc || '', c ? c.gcssId || '' : '',
-      (t.pax || []).map((id) => (P(id) ? personLabel(P(id)) : id)).join('; '), (t.towed || []).map((k) => (V(k) ? V(k).short : k)).join('; '), t.dispatcher || '', t.pmcs ? 'Y' : 'N',
-      cell(ev.result, rs), tripSummaryMessage(ev), [...ev.blockers, ...ev.warnings].map((x) => x.msg).join(' | '), t.notes || '']);
+    const ev = evaluateTrip(t, ctx); const entries = tripEntries(t); const list = entries.length ? entries : [{ id: '', vehicle: '', driver: '', tc: '', pax: [], towed: [], pmcs: false }]; const tripOnly = ev.warnings.filter((x) => !x.entry);
+    const tr = ev.result === 'GO' ? 'go' : ev.result === 'WARN' ? 'warn' : ev.result === 'NO-GO' ? 'nogo' : undefined;
+    list.forEach((e, i) => {
+      const v = V(e.vehicle); const d = P(e.driver), c = P(e.tc); const vw = v ? vehicleView(v, ctx) : null; const er = ev.entries && ev.entries[i];
+      const own = er ? [...er.blockers, ...er.warnings] : (i === 0 ? [...ev.blockers] : []); const all = [...own.map((x) => x.raw || x.msg), ...(i === 0 ? tripOnly.map((x) => x.msg) : [])];
+      const res = er ? er.result : ev.result; const rs = res === 'GO' ? 'go' : res === 'WARN' ? 'warn' : res === 'NO-GO' ? 'nogo' : undefined;
+      rows.push([t.no || '', t.chalk || '', t.status, cell(t.dateOut, 0, 'date'), t.timeOut || '', cell(t.dateBack, 0, 'date'), t.timeBack || '', t.dest || '', v ? (v.short || v.bumper) : e.vehicle || '', vw ? vw.platoon : '', vw ? vw.lin : '', vw ? vw.vin : '', vw ? vw.type : '',
+        d ? personLabel(d) : e.driver || '', d ? d.gcssId || '' : '', d ? d.licNo || '' : '', c ? personLabel(c) : e.tc || '', c ? c.gcssId || '' : '',
+        (e.pax || []).map((id) => (P(id) ? personLabel(P(id)) : id)).join('; '), (e.towed || []).map((k) => (V(k) ? V(k).short : k)).join('; '), t.dispatcher || '', e.pmcs ? 'Y' : 'N',
+        cell(res, rs), all[0] || '', all.join(' | '), t.notes || '', entries.length ? `${i + 1} of ${entries.length}` : '', cell(ev.result, tr)]);
+    });
   }
   // Column max widths (content decides the real width, long text wraps). Status column carries a dropdown with ALL options; the cell value is the trip's real status.
-  const sheets = [{ name: 'Dispatch Log', rows, autosize: true, cols: [7, 7, 11, 13, 8, 13, 8, 34, 11, 14, 9, 20, 22, 24, 16, 14, 24, 16, 34, 18, 18, 8, 10, 40, 60, 36], headerRow: 0,
+  const sheets = [{ name: 'Dispatch Log', rows, autosize: true, cols: [7, 7, 11, 13, 8, 13, 8, 34, 11, 14, 9, 20, 22, 24, 16, 14, 24, 16, 34, 18, 18, 8, 10, 40, 60, 36, 8, 10], headerRow: 0,
     validations: [{ sqref: `C2:C${Math.max(rows.length, 2) + 300}`, list: TRIP_STATUSES, error: 'Use Planned, Out, Back or Cancelled' }] }];
   const c = fleetCounts(ctx); const gi = gcssIdStats(state.roster, state.settings);
   const asOf = asOfDate(state.settings, now);
@@ -34,7 +40,7 @@ export function buildDispatchWorkbook(state, { includeFleet = true, includeRoste
   sheets.push({ name: 'Summary', rows: sum, cols: [34, 40], headerRow: -1, autofilter: false });
   if (includeFleet) {
     const fr = [['Bumper', 'Platoon', 'Chalk', 'Type', 'Model', 'LIN', 'VIN / Serial', 'TM (operator)', 'Status', 'Status source', 'Days NMC', 'NMC since', 'Notes / faults', 'Location (local)', 'GCSS location', 'GCSS status', 'Flags']];
-    const chOf = (k) => { const a = state.chalkPlan && state.chalkPlan.assign[k]; if (a) return a; const t = state.trips.find((x) => (x.status === 'Planned' || x.status === 'Out') && x.vehicle === k && x.chalk); return t ? t.chalk : ''; };
+    const chOf = (k) => chalkOf(state, k) || '';
     for (const v of state.fleet) { const w = vehicleView(v, ctx); if (w.status === 'TURNED IN') continue;
       const fs = w.status === 'FMC' ? 'go' : w.status === 'UNKNOWN' || w.status === 'NO STATUS' ? 'warn' : 'nogo'; const tm = resolveTm(v, { tmByModel: state.tmByModel || {}, tmByType: state.tmByType || {}, typeName: w.type });
       fr.push([v.short, w.platoon, chOf(v.key), w.type, v.model, w.lin, w.vin, tm.resolved ? tm.label : TM_NOT_FOUND, cell(w.status, fs), w.source, w.days ?? '', cell(v.nmcSince, 0, 'date'), v.notes || '', v.location || '', v.funcLoc || '', v.gcss || '', w.flags.join('; ')]); }

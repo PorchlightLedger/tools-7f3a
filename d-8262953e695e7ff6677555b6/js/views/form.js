@@ -1,6 +1,8 @@
 import { S, getCtx, commit, go } from '../ctx.js';
 import { h, openSheet, toast, field, segmented, toggle, confirmBox, clear, pick, safeAppend } from '../dom.js';
 import { vehicleView, idLine } from '../rules.js';
+import { findByVin, suggestLin, headerFromVehicle, vinKey } from '../vin.js';
+import { thumbFor } from '../photoui.js';
 import { tmFor } from './tmedit.js';
 import { knownItems, modelKey } from '../tmdata.js';
 import { SYMBOLS, LEGACY_SYMBOL, INSPECTION_TYPES, READING_TYPES, newForm, newFault, newPart, buildFormPdf, validateForm, formFileName, formHasNMC, symbolText, CIRCLED_X_PREFIX, formUic } from '../form5988.js';
@@ -24,24 +26,69 @@ export function renderForms(root, rest, top) {
   return '5988-E worksheet';
 }
 export async function newFormFlow() {
-  const st = S(); const ctx = getCtx();
-  const items = ctx.fleet.map((v) => ({ v, vw: vehicleView(v, ctx) })).filter((u) => u.vw.status !== 'TURNED IN').sort((a, b) => a.v.key.localeCompare(b.v.key, 'en', { numeric: true })).map((u) => ({ id: u.v.key, label: u.v.short, sub: `${u.vw.type} · ${u.v.model} · ${idLine(u.v) || 'no LIN / VIN'}`, badge: u.vw.status }));
-  if (!items.length) { toast('Import the fleet first.', 'bad'); return; }
-  const r = await pick({ title: 'Choose vehicle for 5988-E', items }); if (r) openFormEditorFor(r);
+  const ctx0 = getCtx();
+  if (!ctx0.fleet.length) { openNewFormSheet(); return; }
+  openNewFormSheet();
 }
-export function openFormEditorFor(key) {
+function openNewFormSheet() {
+  const st = S();
+  openSheet({ title: 'New 5988-E worksheet', build: (b, api) => {
+    const status = h('p', { class: 'hint', 'data-testid': 'nf-vin-status', role: 'status' }, 'Type or paste the VIN / serial number (any case, spaces ignored) and the worksheet fills in from the fleet record. Or choose the vehicle from the fleet list.');
+    const go = h('button', { type: 'button', class: 'btn primary wide', 'data-testid': 'nf-vin-go', disabled: true }, 'Create worksheet');
+    let match = null;
+    const inp = h('input', { type: 'text', autocomplete: 'off', autocapitalize: 'characters', autocorrect: 'off', spellcheck: 'false', placeholder: 'VIN / serial number', 'data-testid': 'nf-vin', 'aria-label': 'VIN or serial number' });
+    const upd = () => {
+      const v = inp.value.trim(); match = v ? findByVin(getCtx().fleet, v) : null; go.disabled = !v;
+      if (!v) { status.textContent = 'Type or paste the VIN / serial number (any case, spaces ignored) and the worksheet fills in from the fleet record. Or choose the vehicle from the fleet list.'; go.textContent = 'Create worksheet'; }
+      else if (match) { const vw = vehicleView(match, getCtx()); status.textContent = `Fleet match: ${match.short} · ${vw.type} · ${match.model}. LIN, model, TM and the other header fields will be filled in.`; go.textContent = `Create 5988-E for ${match.short}`; }
+      else { status.textContent = 'No fleet vehicle has that VIN. You can still make the worksheet and type the other fields by hand (a LIN cannot be worked out from a VIN alone).'; go.textContent = 'Create blank worksheet with this VIN'; }
+    };
+    inp.addEventListener('input', upd);
+    go.addEventListener('click', () => { const v = inp.value.trim(); if (!v) return; api.close(); if (match) openFormEditorFor(match.key); else { const f = newForm(null, { settings: st.settings }); f.serial = v; st.forms.push(f); commit({ render: false }); openFormEditor(f.id, true); } });
+    const pickFleet = h('button', { type: 'button', class: 'btn wide', 'data-testid': 'nf-fleet', onClick: async () => {
+      const ctx = getCtx();
+      const items = ctx.fleet.map((v) => ({ v, vw: vehicleView(v, ctx) })).filter((u) => u.vw.status !== 'TURNED IN').sort((a, c) => a.v.key.localeCompare(c.v.key, 'en', { numeric: true })).map((u) => ({ id: u.v.key, label: u.v.short, sub: `${u.vw.type} · ${u.v.model} · ${idLine(u.v) || 'no LIN / VIN'}`, badge: u.vw.status, thumb: thumbFor(u.v) }));
+      if (!items.length) { toast('Import the fleet first (or type a VIN).', 'bad'); return; }
+      const r = await pick({ title: 'Choose vehicle for 5988-E', items }); if (r) { api.close(); openFormEditorFor(r); }
+    } }, 'Choose vehicle from the fleet list');
+    b.append(field('VIN / serial number', inp), status, go, h('p', { class: 'hint' }, 'or'), pickFleet);
+  } });
+}
+export function openFormEditorFor(key, link = {}) {
   const st = S(); const ctx = getCtx(); const v = ctx.fleetByKey.get(key); const vw = v ? vehicleView(v, ctx) : null;
-  const f = newForm(v, { settings: st.settings, tmByType: st.tmByType, typeName: vw ? vw.type : '', tm: v ? tmFor(v, st, ctx) : null }); st.forms.push(f); commit({ render: false }); openFormEditor(f.id, true);
+  const f = newForm(v, { settings: st.settings, tmByType: st.tmByType, typeName: vw ? vw.type : '', tm: v ? tmFor(v, st, ctx) : null, link }); st.forms.push(f); commit({ render: false }); openFormEditor(f.id, true);
 }
 export function openFormEditor(id, isNew = false) {
   const st = S(); const f = st.forms.find((x) => x.id === id); if (!f) return; const original = JSON.stringify(f);
   openSheet({ title: `5988-E · ${f.adminNumber || 'vehicle'}`, tall: true, onClose: () => { if (isNew && !f.faults.length && JSON.stringify(f) === original) { st.forms = st.forms.filter((x) => x.id !== f.id); } commit(); },
     build: (b, api) => {
       const body = safeAppend(h('div', { class: 'form' })); b.append(body);
-      const txt = (label, key, o = {}) => field(label, h('input', { type: 'text', value: f[key] || '', autocomplete: 'off', autocapitalize: o.cap || 'characters', 'data-testid': 'F-' + key, onInput: (e) => { f[key] = e.target.value; f.updated = new Date().toISOString(); } }), o.hint);
+      const reg = {}; // inputs by field, so a VIN autofill can update them in place (no re-render: the keyboard stays up)
+      const txt = (label, key, o = {}) => { const inp = h('input', { type: 'text', value: f[key] || '', autocomplete: 'off', autocapitalize: o.cap || 'characters', 'data-testid': 'F-' + key, onInput: (e) => { f[key] = e.target.value; f.updated = new Date().toISOString(); o.onInput && o.onInput(e.target.value); } }); reg[key] = inp; return field(label, inp, o.hint); };
+      const setF = (key, val) => { f[key] = val; if (reg[key]) reg[key].value = val; };
+      const vinStatus = h('p', { class: 'hint', 'data-testid': 'F-vin-status', role: 'status' }, ''); const linHint = h('div', { class: 'hint', 'data-testid': 'F-lin-hint' });
+      const updLinHint = () => {
+        clear(linHint); if (f.lin || !f.model) return; const sg = suggestLin(getCtx().fleet, f.model, st.settings, { exceptKey: f.vehicleKey });
+        linHint.append(sg ? h('span', null, `No LIN yet. Other fleet vehicles of ${sg.basis} use `, h('b', { class: 'mono' }, sg.lin), ` (${sg.count}). A LIN cannot be derived from the VIN - confirm it. `, h('button', { type: 'button', class: 'btn small', 'data-testid': 'F-lin-suggest', onClick: () => { setF('lin', sg.lin); f.updated = new Date().toISOString(); updLinHint(); } }, 'Use ' + sg.lin)) : h('span', null, 'No LIN on file. A LIN cannot be derived from a VIN; type it from the data plate / GCSS.'));
+      };
+      const fillFromVehicle = (v, { overwrite }) => {
+        const ctx = getCtx(); const hd = headerFromVehicle(v, ctx, st); const put = (k, val) => { if (overwrite || !f[k]) setF(k, val); };
+        f.vehicleKey = hd.vehicleKey; f.vehicleId = hd.vehicleId; put('adminNumber', hd.adminNumber); put('lin', hd.lin); put('model', hd.model); put('noun', hd.noun); put('nsn', hd.nsn); put('registration', hd.registration);
+        if (hd.serial) setF('serial', hd.serial);
+        if (hd.uic && (overwrite || !effUic())) { f.uicOverride = true; f.uic = hd.uic; if (reg.uic) reg.uic.value = hd.uic; const hh = body.querySelector('[data-testid="F-uic-hint"]'); if (hh) hh.textContent = 'Changed for this form only.'; }
+        if (hd.pubs && (overwrite || !f.pubs.some((p) => p.tm))) { f.pubs.forEach((p, i) => { const n = hd.pubs[i] || { tm: '', date: '', change: '' }; Object.assign(p, { tm: n.tm || '', date: n.date || '', change: n.change || '' }); for (const k of ['tm', 'date', 'change']) { const el = body.querySelector(`[data-testid="F-pub${i}-${k}"]`); if (el) el.value = p[k]; } }); }
+        if (hd.pmcsRef && (overwrite || !f.pmcsRef)) f.pmcsRef = hd.pmcsRef;
+        f.updated = new Date().toISOString(); updLinHint();
+      };
+      const onVin = (val) => {
+        const v = val.trim(); if (!v) { vinStatus.textContent = ''; return; }
+        const m = findByVin(getCtx().fleet, v);
+        if (m) { const sameLink = m.key === f.vehicleKey; fillFromVehicle(m, { overwrite: !sameLink }); vinStatus.textContent = sameLink ? `VIN matches ${m.short} (this worksheet's vehicle); empty fields filled in.` : `VIN matched fleet vehicle ${m.short}: admin number, LIN, model, TM and UIC filled in.`; vinStatus.className = 'hint go'; }
+        else { vinStatus.className = 'hint'; vinStatus.textContent = vinKey(v).length < 4 ? '' : 'No fleet vehicle has this VIN. Enter the other fields by hand (a LIN cannot be derived from a VIN).'; }
+      };
       const effUic = () => formUic(f, st.settings);
       const uicField = () => {
-        const inp = h('input', { type: 'text', value: effUic(), autocomplete: 'off', autocapitalize: 'characters', placeholder: st.settings.unitUic ? '' : 'set Unit UIC in Settings', 'data-testid': 'F-uic', onInput: (e) => { const v = e.target.value.trim(); f.updated = new Date().toISOString(); if (v === String(st.settings.unitUic || '').trim()) { f.uicOverride = false; f.uic = ''; } else { f.uicOverride = true; f.uic = v; } hint.textContent = hintText(); } });
+        const inp = reg.uic = h('input', { type: 'text', value: effUic(), autocomplete: 'off', autocapitalize: 'characters', placeholder: st.settings.unitUic ? '' : 'set Unit UIC in Settings', 'data-testid': 'F-uic', onInput: (e) => { const v = e.target.value.trim(); f.updated = new Date().toISOString(); if (v === String(st.settings.unitUic || '').trim()) { f.uicOverride = false; f.uic = ''; } else { f.uicOverride = true; f.uic = v; } hint.textContent = hintText(); } });
         const hintText = () => (f.uicOverride ? 'Changed for this form only.' : st.settings.unitUic ? 'From Settings > Unit UIC.' : 'Blank: set the Unit UIC in More > Settings.');
         const hint = h('small', { class: 'hint', 'data-testid': 'F-uic-hint' }, hintText());
         return h('div', { class: 'field' }, h('label', null, h('span', { class: 'lbl' }, 'UIC'), inp), hint, f.uicOverride ? h('button', { type: 'button', class: 'btn small', 'data-testid': 'F-uic-reset', onClick: () => { f.uicOverride = false; f.uic = ''; draw(); } }, 'Use Settings UIC') : null);
@@ -49,7 +96,7 @@ export function openFormEditor(id, isNew = false) {
       const draw = () => {
         clear(body); const warns = validateForm(f, { settings: st.settings });
         body.append(h('div', { class: 'note', role: 'note' }, DISCLAIMER));
-        body.append(h('h3', null, 'Equipment data'), h('div', { class: 'grid2' }, txt('Admin number', 'adminNumber'), txt('VIN / Serial', 'serial'), txt('LIN', 'lin'), txt('Equip model', 'model'), txt('Registration', 'registration')), txt('Equip noun', 'noun'), txt('Equip NSN', 'nsn', { hint: 'Not in the GCSS export - type it if you want it on the form' }),
+        body.append(h('h3', null, 'Equipment data'), h('div', { class: 'grid2' }, txt('Admin number', 'adminNumber'), txt('VIN / Serial', 'serial', { onInput: onVin }), txt('LIN', 'lin', { onInput: updLinHint }), txt('Equip model', 'model', { onInput: updLinHint }), txt('Registration', 'registration')), vinStatus, linHint, txt('Equip noun', 'noun'), txt('Equip NSN', 'nsn', { hint: 'Not in the GCSS export - type it if you want it on the form' }),
           h('div', { class: 'grid2' }, h('div', { class: 'field' }, h('span', { class: 'lbl' }, 'Date'), h('button', { type: 'button', class: 'select-btn dt-btn', 'data-testid': 'F-date', 'data-value': f.date || '', onClick: async () => { const r = await pickDate({ title: 'Form date', value: f.date || '', allowClear: false }); if (r === undefined) return; f.date = r || f.date; draw(); } }, h('span', { class: 'val' }, f.date ? fmtDate(f.date) : 'Tap to set'))), uicField()),
           field('Type inspection', segmented(INSPECTION_TYPES.map(([c, n]) => [c, c, n]), f.typeInsp, (v) => { f.typeInsp = v; }, { label: 'Type of inspection', cls: 'wrapseg' })),
           h('div', { class: 'grid2' }, field('Reading type', segmented(READING_TYPES.map(([c, n]) => [c, c, n]), f.readingType, (v) => { f.readingType = v; }, { label: 'Reading type' })), txt('Current reading', 'reading', { hint: '' })));
@@ -72,7 +119,7 @@ export function openFormEditor(id, isNew = false) {
         body.append(btn('+ Add part line', () => openPartSheet(f, null, draw), 'small'));
         if (warns.length) body.append(h('div', { class: 'card warn', 'data-testid': 'form-warnings' }, h('b', null, 'Check before printing'), h('ul', null, warns.map((w) => h('li', null, w)))));
       };
-      draw();
+      draw(); updLinHint();
       api.foot.append(
         h('button', { class: 'btn danger', type: 'button', 'data-testid': 'form-delete', onClick: async () => { if (await confirmBox({ title: 'Delete worksheet?', message: 'This removes the saved worksheet from the app.', okText: 'Delete', danger: true })) { st.forms = st.forms.filter((x) => x.id !== f.id); isNew = false; commit(); api.close(); } } }, 'Delete'),
         h('button', { class: 'btn', type: 'button', 'data-testid': 'form-save', onClick: () => { f.updated = new Date().toISOString(); commit(); toast('Worksheet saved'); } }, 'Save'),

@@ -122,7 +122,7 @@ export function pick({ title, items, multi = false, selected = [], more = null, 
             const on = sel.has(i.id);
             const btn = h('button', { type: 'button', class: 'pick-item' + (on ? ' on' : ''), role: 'option', 'aria-selected': String(on), disabled: i.disabled, 'data-id': i.id, onClick: () => {
               if (multi) { if (sel.has(i.id)) sel.delete(i.id); else sel.add(i.id); draw(); } else { fin(i.id); api.close(); }
-            } }, h('span', { class: 'pi-main' }, h('b', null, i.label), i.sub ? h('small', null, i.sub) : null), i.badge ? h('span', { class: 'chip ' + (i.badgeClass || '') }, i.badge) : null, multi ? h('span', { class: 'check', 'aria-hidden': 'true' }, on ? '✔' : '') : null);
+            } }, i.thumb ? i.thumb() : null, h('span', { class: 'pi-main' }, h('b', null, i.label), i.sub ? h('small', null, i.sub) : null), i.badge ? h('span', { class: 'chip ' + (i.badgeClass || '') }, i.badge) : null, multi ? h('span', { class: 'check', 'aria-hidden': 'true' }, on ? '✔' : '') : null);
             list.append(h('li', null, btn));
           });
         };
