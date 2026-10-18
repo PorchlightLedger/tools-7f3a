@@ -146,3 +146,12 @@ input[type=file] { width: 100%; padding: 10px 0; font-size: 15px; }
 .note.backup-age { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
 input.from-file { border: 2px solid var(--orange); background: var(--orange-bg); }
 .banner .btn { min-height: 44px; }
+/* Reports: Slant table (3 columns) */
+.slant-card { padding: 12px 8px; }
+.slant-title { font-size: 19px; margin: 2px 6px 0; } .slant-date { margin: 2px 6px 10px; color: var(--muted); font-size: 14px; }
+table.slant { width: 100%; border-collapse: collapse; font-size: 16px; font-variant-numeric: tabular-nums; }
+table.slant th, table.slant td { padding: 9px 6px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; }
+table.slant thead th { border-top: 0; border-bottom: 2px solid var(--line); font-size: 13px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+table.slant tbody th { font-weight: 600; } table.slant .num { text-align: right; white-space: nowrap; width: 5.5em; }
+table.slant td.num small.xnote { display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
+.slant-actions .btn { flex: 1 1 0; min-width: 90px; text-decoration: none; }

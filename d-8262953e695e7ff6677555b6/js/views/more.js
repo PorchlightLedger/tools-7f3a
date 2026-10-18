@@ -13,6 +13,7 @@ import { openExportSheet } from './exporter.js';
 import { renderWalk } from './walk.js';
 import { renderForms, openPresetEditor } from './form.js';
 import { renderChalk } from './chalk.js';
+import { renderReports } from './reports.js';
 import { btn, piiNote } from '../ui.js';
 import { clean } from '../util.js';
 
@@ -20,6 +21,7 @@ export function renderMore(root, rest, top) {
   if (rest[0] === 'walk') return renderWalk(root, rest, top);
   if (rest[0] === 'forms') return renderForms(root, rest, top);
   if (rest[0] === 'chalk') return renderChalk(root, rest, top);
+  if (rest[0] === 'reports') return renderReports(root, rest, top);
   if (rest[0] === 'settings') { setTimeout(() => { history.replaceState(null, '', '#more'); openSettings(); }, 0); }
   if (rest[0] === 'backup') { setTimeout(() => { history.replaceState(null, '', '#more'); openBackup(); }, 0); }
   const item = (title, sub, onClick, testid) => h('button', { type: 'button', class: 'menu-item', onClick, 'data-testid': testid }, h('span', null, h('b', null, title), h('small', null, sub)), h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'));
@@ -28,6 +30,7 @@ export function renderMore(root, rest, top) {
       item('Walk-around (motor pool)', 'Tap a vehicle: status, fault notes, location, NMC-since', () => go('#more/walk'), 'menu-walk'),
       item('Chalk planner', 'Number the chalks, tap vehicles onto them, see crews and warnings', () => go('#more/chalk'), 'menu-chalk'),
       item('DA 5988-E worksheet', 'Pick vehicle, tap status symbols, make a PDF', () => go('#more/forms'), 'menu-forms'),
+      item('Reports (Slant report)', 'Equipment on hand and NMC; send it or email a draft', () => go('#more/reports'), 'menu-reports'),
       item('Share dispatch spreadsheet', 'Build the .xlsx on this phone and send it', () => openExportSheet(), 'menu-export'),
       item('Settings', 'Email recipient, rules, type map, lists', () => openSettings(), 'menu-settings'),
       item('Backup, restore & wipe', 'JSON backup via share sheet; wipe all data', () => openBackup(), 'menu-backup'),
@@ -150,6 +153,7 @@ export function openHelp() {
       h('h3', null, 'Rules (same as the spreadsheet system)'), h('ul', null, h('li', null, 'GCSS-Army is the source of truth for FMC / NMCM / NMCS. A local walk-around status is flagged and cleared when GCSS agrees.'), h('li', null, 'A bumper ending in digit + X (A-362X) is a permanent NMC (NMC-X): never dispatchable.'), h('li', null, 'Turned-in vehicles are off the books and excluded from counts (Settings > Turned-in bumpers).'), h('li', null, 'GO / WARN / NO-GO: vehicle must be FMC, not X / turned in, not already on a trip. Driver must be Active, license valid on the trip date, qualified for the vehicle type, not already on a trip. A driver without a GCSS-Army ID is a WARN. A license that expires BEFORE the last day of the trip (date back, or date out when there is no date back; the expiry day itself is still valid) is NO-GO: a commander may override it (renewal or a relief driver may be arranged). One that is already expired on the date out cannot be overridden. The TC / A-driver follows the TC license setting (WARN or BLOCK).'), h('li', null, 'Towed items follow the same status rules (NMCM / NMCS / X / turned in / GCSS not dispatchable = NO-GO). A towed item that is X or turned in cannot be overridden; NMCM / NMCS / GCSS not dispatchable can (a recovery tow of a down item). A model missing from the Type map is a WARN.'), h('li', null, 'Unknown models and blank qualification rules fail closed (NO-GO).'),
         h('li', null, 'Busy: a vehicle or person is busy from the date out through the date back. Trips on different days do not collide; trips that share a day do (times are used when both have them). An Out trip is busy until it is set Back, and shows "Not back: past due" after its return date.'),
         h('li', { 'data-testid': 'help-override-rules' }, 'Commander override records an approval for a NO-GO vehicle, this crew and these reasons (change the driver, TC, passengers or trailers and it no longer covers). It can NOT waive an expired / missing driver license, an X (deadlined) or turned-in vehicle or towed item, or a data error: a commander cannot waive a license requirement or dispatch a deadlined or turned-in vehicle. It CAN waive a license that expires before the trip ends, and an NMCM / NMCS towed item.')),
+      h('h3', null, 'Reports'), h('p', { 'data-testid': 'help-reports' }, 'More > Reports shows the Slant report: Equipment, On-hand (everything on the books, including X and turned-in vehicles) and NMC (NMCM + NMCS + every vehicle ending in digit + X, counted once). Send opens the share sheet (pick Messages or Mail and the recipient there); Email draft asks for an address each time. Nothing is saved.'),
       h('h3', null, 'Install on iPhone'), h('p', null, 'Safari > Share > Add to Home Screen. After the first load it works offline.'),
       h('p', { 'data-testid': 'help-install-first' }, h('b', null, 'Install to the Home Screen first, then import. '), 'Data you enter in a Safari tab does not carry into the installed app: they are separate storage. Open the installed app and import (or restore a backup) there.'),
       h('h3', null, 'Version'), ver,
