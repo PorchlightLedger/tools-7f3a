@@ -1,5 +1,5 @@
 // Business rules (mirrors the spreadsheet system's rules). Pure functions - no DOM, no storage.
-import { parseDateLoose, daysBetween, dayNum, todayISO, clean, normKeyText, uid } from './util.js';
+import { parseDateLoose, daysBetween, dayNum, todayISO, clean, normKeyText, uid, fmtDate } from './util.js';
 
 export const DEFAULT_PREFIXES = []; // optional extra prefixes to strip; a leading unit code before the final "A-123" style token is detected automatically
 export const DEFAULT_TURNED_IN = []; // editable in Settings (turned in / off the books)
@@ -285,6 +285,9 @@ export function fleetCounts(ctx) {
 export const pct = (r) => `${(Math.round(r * 10000) / 100).toFixed(2)}%`;
 
 // ---------- the GO / WARN / NO-GO engine ----------
+/** a valid license that expires BEFORE the trip's last day (the expiry day itself still counts). Already-expired / missing licenses are handled by licenseState. */
+const licenseEndsBeforeTrip = (p, tripEnd) => { const e = p && p.licExp ? parseDateLoose(p.licExp) : ''; return !!(e && tripEnd && e < tripEnd); };
+const licMidMsg = (who, p, tripEnd) => `${who} ${personName(p).toUpperCase()}: LICENSE EXPIRES ${fmtDate(p.licExp)} BEFORE THE TRIP ENDS (${fmtDate(tripEnd)})`;
 const LICMSG = { MISSING: 'LICENSE DATE MISSING', INVALID: 'LICENSE DATE UNREADABLE', EXPIRED: 'LICENSE EXPIRED' };
 /** a fleet record whose description / model reads like a trailer or towed asset (used only to word the unmapped-model warning) */
 const looksLikeTrailer = (v) => /\b(TRL|TRLR|TRAILER|SEMITRAILER|SEMI-TRAILER|LOWBOY|LOW BOY|WATER BUFFALO|BUFFALO|M149|M1101|M1095|M870|GENERATOR|GEN SET|LIGHT SET)\b/i.test(`${v.desc || ''} ${v.model || ''}`);
@@ -292,7 +295,9 @@ const looksLikeTrailer = (v) => /\b(TRL|TRLR|TRAILER|SEMITRAILER|SEMI-TRAILER|LO
 function evaluateEntry(entry, trip, ctx, { seen, prefix, usedKeys }) {
   const st = ctx.settings; const res = { entry, result: '', blockers: [], warnings: [], driverGcssId: '', tcGcssId: '', vehicleType: '', vehicleStatus: '', vehicle: null };
   const B = (code, msg, pid) => res.blockers.push({ code, msg: prefix + msg, raw: msg, entry: entry.id, ...(pid ? { pid } : {}) }); const W = (code, msg, pid) => res.warnings.push({ code, msg: prefix + msg, raw: msg, entry: entry.id, ...(pid ? { pid } : {}) });
-  const evalDate = parseDateLoose(trip.dateOut) || ctx.asOf; const win = Math.max(0, +st.licenseWindow || 0);
+  const evalDate = parseDateLoose(trip.dateOut) || ctx.asOf;
+  const tripEnd = parseDateLoose(trip.dateBack) || parseDateLoose(trip.dateOut) || ''; // last day of the trip (dateBack, else dateOut)
+  const win = Math.max(0, +st.licenseWindow || 0);
   let vview = null;
   if (!entry.vehicle) B('NO_VEHICLE', 'NO VEHICLE SELECTED');
   else {
@@ -324,8 +329,8 @@ function evaluateEntry(entry, trip, ctx, { seen, prefix, usedKeys }) {
       res.driverGcssId = clean(d.gcssId);
       if (!personAvailable(d, st)) B('DRV_INACTIVE', `DRIVER NOT ACTIVE (${d.status || 'no status'})`, d.id);
       const ls = licenseState(d, evalDate, win);
-      const ends = parseDateLoose(trip.dateBack); const midTrip = !LICMSG[ls] && ends && ends > evalDate && d.licExp && parseDateLoose(d.licExp) < ends; // valid when the trip leaves, expired before it ends
-      if (LICMSG[ls]) B('DRV_LIC', 'DRIVER ' + LICMSG[ls], d.id); else if (midTrip) W('DRV_LIC_TRIP', `DRIVER LICENSE EXPIRES ${d.licExp} BEFORE THE TRIP ENDS (${trip.dateBack})`, d.id); else if (ls === 'EXPIRING') W('DRV_LIC_SOON', `DRIVER LICENSE EXPIRES WITHIN ${win} DAYS (${d.licExp})`, d.id);
+      const midTrip = !LICMSG[ls] && licenseEndsBeforeTrip(d, tripEnd);
+      if (LICMSG[ls]) B('DRV_LIC', 'DRIVER ' + LICMSG[ls], d.id); else if (midTrip) B('DRV_LIC_MIDTRIP', licMidMsg('DRIVER', d, tripEnd), d.id); else if (ls === 'EXPIRING') W('DRV_LIC_SOON', `DRIVER LICENSE EXPIRES WITHIN ${win} DAYS (${d.licExp})`, d.id);
       if (vview && vview.mapped && vview.ruleOk && vview.qual && vview.qual !== 'NONE' && !hasQual(d, vview.qual)) B('DRV_QUAL', `DRIVER NOT QUALIFIED ON ${vview.type}`, d.id);
       if (personConflicts(d.id, trip, ctx.trips, ctx.asOf).length) B('DRV_BUSY', 'DRIVER IS ALSO ON ANOTHER ACTIVE TRIP', d.id);
       if (!res.driverGcssId && st.gcssIdRule !== 'OFF') (st.gcssIdRule === 'BLOCK' ? B : W)('DRV_GCSS_ID', 'DRIVER HAS NO GCSS-ARMY ID (needed to enter the dispatch in GCSS-Army)', d.id);
@@ -343,7 +348,9 @@ function evaluateEntry(entry, trip, ctx, { seen, prefix, usedKeys }) {
       if (!personAvailable(c, st)) B('TC_INACTIVE', 'TC / A-DRIVER NOT ACTIVE', c.id);
       if (personConflicts(c.id, trip, ctx.trips, ctx.asOf).length) B('TC_BUSY', 'TC / A-DRIVER IS ALSO ON ANOTHER ACTIVE TRIP', c.id);
       const ls = licenseState(c, evalDate, win);
-      if (LICMSG[ls]) (String(st.tcRule).toUpperCase() === 'BLOCK' ? B : W)('TC_LIC', 'TC / A-DRIVER ' + LICMSG[ls], c.id);
+      const tcPut = String(st.tcRule).toUpperCase() === 'BLOCK' ? B : W;
+      if (LICMSG[ls]) tcPut('TC_LIC', 'TC / A-DRIVER ' + LICMSG[ls], c.id);
+      else if (licenseEndsBeforeTrip(c, tripEnd)) tcPut('TC_LIC_MIDTRIP', licMidMsg('TC / A-DRIVER', c, tripEnd), c.id); // same WARN / BLOCK rule as the other TC license checks
       else if (ls === 'EXPIRING') W('TC_LIC_SOON', 'TC / A-DRIVER LICENSE EXPIRES SOON', c.id);
       if (st.tcQualWarn && vview && vview.ruleOk && vview.qual && vview.qual !== 'NONE' && !hasQual(c, vview.qual)) W('TC_QUAL', `TC / A-DRIVER NOT QUALIFIED ON ${vview.type}`, c.id);
       if (!res.tcGcssId && st.gcssIdRule !== 'OFF') W('TC_GCSS_ID', 'TC / A-DRIVER HAS NO GCSS-ARMY ID', c.id);
@@ -359,8 +366,9 @@ function evaluateEntry(entry, trip, ctx, { seen, prefix, usedKeys }) {
     if (!tv) { B('TOW_NOT_FOUND', 'TOWED ITEM NOT IN FLEET LIST'); continue; }
     const tw = vehicleView(tv, ctx); const nm = tv.short || tv.bumper;
     // status gates apply to EVERY towed item whatever its mapped class (a recovery tow or an unmapped model must not fail open)
-    if (tw.status === 'TURNED IN') B('TOW_STATUS', `TOWED ITEM ${nm} WAS TURNED IN (off the books)`);
-    else if (tw.status === 'NMC-X') B('TOW_STATUS', `TOWED ITEM ${nm} IS NMC-X (permanent NMC)`);
+    if (tw.status === 'TURNED IN') B('TOW_TURNED_IN', `TOWED ITEM ${nm} WAS TURNED IN (off the books)`); // never overridable
+    else if (tw.status === 'NMC-X') B('TOW_NMCX', `TOWED ITEM ${nm} IS NMC-X (permanent NMC)`); // never overridable
+    // NMCM / NMCS / GCSS not-dispatchable stay overridable (a recovery tow of a down item is plausible)
     else if (tw.status === 'NMCM' || tw.status === 'NMCS') B('TOW_STATUS', `TOWED ITEM ${nm} IS ${tw.status}`);
     else if (tw.cls === 'Towed' && tw.status !== 'FMC') B('TOW_STATUS', `TOWED ITEM ${nm} IS ${tw.status}`);
     if (tw.gcssNotDispatchable) B('TOW_GCSS_ND', `TOWED ITEM ${nm}: GCSS SAYS NOT DISPATCHABLE`);
@@ -425,8 +433,8 @@ export function outCheckOf(ev, now = new Date()) { return { at: now.toISOString(
 /** Reasons no commander can waive. (a) data errors: nothing real to dispatch / the same item twice. (b) legal / readiness limits: an expired, missing or unreadable
  *  driver license date, a permanent-NMC (X, deadlined) vehicle and a turned-in (off the books) vehicle. NMCM / NMCS status, qualification gaps, PMCS, busy
  *  crews, GCSS ID rules etc. stay overridable. */
-export const NON_OVERRIDABLE = ['NO_VEHICLE', 'VEH_NOT_FOUND', 'VEH_TWICE', 'TOW_SELF', 'TOW_TWICE', 'TOW_NOT_FOUND', 'PERSON_TWICE', 'STATUS_BAD', 'DRV_LIC', 'VEH_NMCX', 'VEH_TURNED_IN'];
-export const NON_OVERRIDABLE_WHY = 'A commander cannot waive a license requirement or dispatch a deadlined (X) or turned-in vehicle, and data errors (no vehicle, the same vehicle or person twice, a trailer towing itself) are not a readiness call. Fix or remove them.';
+export const NON_OVERRIDABLE = ['NO_VEHICLE', 'VEH_NOT_FOUND', 'VEH_TWICE', 'TOW_SELF', 'TOW_TWICE', 'TOW_NOT_FOUND', 'PERSON_TWICE', 'STATUS_BAD', 'DRV_LIC', 'VEH_NMCX', 'VEH_TURNED_IN', 'TOW_NMCX', 'TOW_TURNED_IN'];
+export const NON_OVERRIDABLE_WHY = 'A commander cannot waive a license requirement or dispatch a deadlined (X) or turned-in vehicle, and the same goes for a deadlined (X) or turned-in towed item. Data errors (no vehicle, the same vehicle or person twice, a trailer towing itself) are not a readiness call. Fix or remove them.';
 export const OVERRIDE_NAME_MAX = 80, OVERRIDE_REASON_MAX = 300;
 const reasonKey = (r) => `${r.code}|${r.raw || r.msg}`;
 const oneLine = (x, max) => String(x == null ? '' : x).replace(/\s+/g, ' ').trim().slice(0, max);
@@ -520,14 +528,16 @@ export function usableTowed(ctx, trip, { exclude = [] } = {}) {
 /** role: 'driver' (license + qual required) | 'tc' | 'pax' */
 export function usablePeople(ctx, trip, role, vehicleKey, { exclude = [] } = {}) {
   const ex = new Set(exclude);
-  const evalDate = parseDateLoose(trip.dateOut) || ctx.asOf; const win = Math.max(0, +ctx.settings.licenseWindow || 0);
+  const evalDate = parseDateLoose(trip.dateOut) || ctx.asOf;
+  const tripEnd = parseDateLoose(trip.dateBack) || parseDateLoose(trip.dateOut) || ''; // last day of the trip (dateBack, else dateOut)
+  const win = Math.max(0, +ctx.settings.licenseWindow || 0);
   const v = vehicleKey ? ctx.fleetByKey.get(vehicleKey) : null; const vw = v ? vehicleView(v, ctx) : null;
   return ctx.roster.filter((p) => {
     if (!personAvailable(p, ctx.settings)) return false;
     if (ex.has(p.id)) return false;
     if (personConflicts(p.id, trip, ctx.trips, ctx.asOf).length) return false;
     if (role === 'driver') {
-      const ls = licenseState(p, evalDate, win); if (ls === 'MISSING' || ls === 'INVALID' || ls === 'EXPIRED') return false;
+      const ls = licenseState(p, evalDate, win); if (ls === 'MISSING' || ls === 'INVALID' || ls === 'EXPIRED' || licenseEndsBeforeTrip(p, tripEnd)) return false; // (a commander can still pick such a person from the full list and record an override)
       if (vw && vw.ruleOk && vw.qual && vw.qual !== 'NONE' && !hasQual(p, vw.qual)) return false;
     }
     return true;
