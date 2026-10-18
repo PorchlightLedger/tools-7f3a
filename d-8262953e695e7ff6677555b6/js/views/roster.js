@@ -96,7 +96,8 @@ export function openRosterImport() {
         parsed.hasGcssCol ? null : h('p', { class: 'hint warn' }, 'No GCSS ID column found. Existing IDs are kept; you can add IDs per person.')));
       const w = [];
       if (parsed.dropped.length) w.push(`Ignored, NOT stored: ${parsed.dropped.join(', ')}`); if (parsed.newQuals.length) w.push(`New qualification column(s) added: ${parsed.newQuals.join(', ')}`);
-      if (parsed.ignored.length) w.push(`Unrecognized columns ignored: ${parsed.ignored.join(', ')}`); if (i.generatedIds) w.push(`${i.generatedIds} row(s) had no ID - IDs were generated`);
+      if (parsed.ignored.length) w.push(`Unrecognized columns ignored: ${parsed.ignored.join(', ')}`); if (i.matchedByName) w.push(`${i.matchedByName} row(s) had no ID and were matched to people already in the app by last + first name (updated, not added)`); if (i.generatedIds) w.push(`${i.generatedIds} row(s) had no ID and are new people - IDs were generated`);
+      if (i.ambiguous.length) w.push(`Skipped: more than one person in the app has that name and the file has no ID: ${i.ambiguous.join('; ')}. Add an ID column or a Rank to tell them apart.`);
       if (i.dupIds.length) w.push(`Duplicate IDs skipped: ${i.dupIds.join(', ')}`); if (i.badLicense.length) w.push(`Unreadable license dates (treated as invalid): ${i.badLicense.join(', ')}`); if (i.unknownStatus.length) w.push(`Statuses not in your list (treated as not available): ${i.unknownStatus.slice(0, 6).join('; ')}`);
       if (w.length) out.append(h('div', { class: 'card warn' }, w.map((x) => h('p', null, x))));
       out.append(field('How to apply', segmented([['merge', 'Update by ID + add new'], ['replace', 'Replace whole roster']], mode, (v) => { mode = v; }, { label: 'Import mode' }), 'Update keeps existing GCSS IDs when the file has none.'));
@@ -106,7 +107,7 @@ export function openRosterImport() {
         st.rosterMeta.importedAt = new Date().toISOString(); commit(); api.close(); toast(`Roster: ${r.added} added, ${r.updated} updated`);
       } }, 'Apply roster import'));
     };
-    const run = (rows) => { try { parsed = parseRosterRows(rows, st.settings, { existing: mode === 'merge' ? st.roster : [] }); preview(); } catch (e) { fail(e); } };
+    const run = (rows) => { try { parsed = parseRosterRows(rows, st.settings, { existing: st.roster }); preview(); } catch (e) { fail(e); } };
     file.addEventListener('change', async () => { const f = file.files[0]; if (!f) return; try { const t = await readTable(await readFileBytes(f)); if (t.kind === 'text') run(parseDelimited(t.text)); else { const sh = t.sheets.find((x) => x.rows.length > 1) || t.sheets[0]; if (!sh) throw new Error('No sheet with data found in that file.'); run(sh.rows); } } catch (e) { fail(e); } });
     b.append(h('p', { class: 'hint' }, 'Columns: ID, Status, Platoon, Rank, Last name, First name, License Exp, AMMO, HAZMAT, NVD, GCSS ID, then one column per qualification (X = qualified). The ID column should be a local ID (P001), not a DODID/SSN. DODID, SSN and DOB columns are dropped on import and never stored.'), piiNote(),
       field('Roster file (.xls, .xlsx, .csv, .txt)', file), ta, h('button', { class: 'btn wide', type: 'button', 'data-testid': 'rimport-read', onClick: () => { if (!ta.value.trim()) { fail(new Error('Paste the text first, or choose a file.')); return; } run(parseDelimited(ta.value)); } }, 'Read pasted text'), out);

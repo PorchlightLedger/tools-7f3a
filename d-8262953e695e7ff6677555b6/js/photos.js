@@ -43,12 +43,28 @@ export async function loadPhotoIndex() {
 }
 export const hasPhoto = (key) => !!key && index.has(key);
 export const photoMeta = (key) => index.get(key) || null;
-/** which photo a vehicle shows: its own, else its model's. -> {key, source:'vehicle'|'model'} or null */
+// Type map lookup for the fallback below: photos.js stays free of app state, ctx.js installs a resolver (model number -> type-map type name, '' when unmapped).
+let typeOfModel = () => '';
+export function setPhotoTypeResolver(fn) { typeOfModel = typeof fn === 'function' ? fn : () => ''; }
+/** the model photo of ANOTHER model that stands in for `v` when its own model has no photo: first a model with the same type-map type, then
+ *  (Humvee family: HMMWV by type or M11xx by model number) any Humvee model photo. Deterministic (sorted by key). null when there is none. */
+export function typeFallbackKey(v) {
+  const mk = modelPhotoKey(v && v.model); if (!mk) return null;
+  const models = [...index.values()].filter((m) => m.kind === 'model' && m.key !== mk).sort((a, b) => (a.key < b.key ? -1 : 1)); if (!models.length) return null;
+  const myType = typeOfModel(v.model) || ''; const norm = (t) => String(t || '').trim().toUpperCase();
+  if (myType) { const hit = models.find((m) => norm(typeOfModel(m.ref)) === norm(myType)); if (hit) return hit.key; }
+  if (isHumveeModel(v.model, myType)) { const hit = models.find((m) => isHumveeModel(m.ref, typeOfModel(m.ref))); if (hit) return hit.key; }
+  return null;
+}
+/** which photo a vehicle shows: its own, else its exact model's, else a photo of a model with the same type. -> {key, source:'vehicle'|'model'|'type'} or null */
 export function effectivePhoto(v) {
   if (!v) return null; const vk = vehicleKeyOf(v); if (vk && index.has(vk)) return { key: vk, source: 'vehicle' };
   const mk = modelPhotoKey(v.model); if (mk && index.has(mk)) return { key: mk, source: 'model' };
+  const tk = typeFallbackKey(v); if (tk) return { key: tk, source: 'type', model: index.get(tk).ref };
   return null;
 }
+/** true when any vehicle or model photo exists (used to decide whether rows without a photo show a neutral placeholder box so the rows line up) */
+export const hasAnyFleetPhoto = () => { for (const m of index.values()) if (m.kind === 'vehicle' || m.kind === 'model') return true; return false; };
 export const photoKeys = () => [...index.keys()];
 
 async function urlFor(key, which) {

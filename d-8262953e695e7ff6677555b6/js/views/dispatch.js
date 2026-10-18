@@ -4,16 +4,18 @@ import { assignVehicleToChalk, chalkLabel, chalkOffers, addChalkOffers } from '.
 import { vthumb, thumbFor } from '../photoui.js';
 import { openFormEditorFor } from './form.js';
 import { h, openSheet, toast, field, segmented, toggle, pick, confirmBox, clear } from '../dom.js';
-import { evaluateTrip, tripOverrides, overrideMarker, isActiveTrip, usableVehicles, usableTowed, usablePeople, vehicleView, personLabel, tripSummaryMessage, TRIP_STATUSES, personName, missingGcssId, idLine, platoonLabels, tripEntries, newEntry } from '../rules.js';
+import { evaluateTrip, tripOverrides, overrideMarker, isActiveTrip, usableVehicles, usableTowed, usablePeople, vehicleView, personLabel, tripSummaryMessage, TRIP_STATUSES, isPastDue, newBlockingReasons, outCheckOf, personName, missingGcssId, idLine, platoonLabels, tripEntries, newEntry } from '../rules.js';
 import { uid, todayISO, nowHHMM, fmtDate } from '../util.js';
 import { resultChip, tripTimes, nameWithId, btn, chips, emptyCard, STATUS_CLASS, licNoBadge } from '../ui.js';
 import { openExportSheet } from './exporter.js';
-import { openOverrideDialog, overrideMark, undoOverride } from './override.js';
+import { asOfBar } from '../banners.js';
+import { openOverrideDialog, overrideMark, undoOverride, stampText } from './override.js';
 
 let filter = 'active'; let platoonFilter = 'all';
 export function renderDispatch(root, rest, top) {
   if (rest[0] === 'new') { setTimeout(() => { history.replaceState(null, '', '#dispatch'); openTripEditor(null); }, 0); }
   const st = S(); const ctx = getCtx();
+  root.append(asOfBar());
   top.append(btn('＋ New trip', () => openTripEditor(null), 'primary small', { 'data-testid': 'new-trip' }));
   const today = todayISO();
   root.append(chips([['active', 'Active'], ['today', 'Today'], ['all', 'All'], ['Back', 'Back'], ['Cancelled', 'Cancelled']], filter, (v) => { filter = v; go('#dispatch'); }, { label: 'Filter trips' }));
@@ -36,7 +38,7 @@ function tripCard(t, ev, ctx) {
   const evOut = t.status === 'Planned' ? evaluateTrip({ ...t, status: 'Out' }, ctx) : ev; const ovMark = overrideMarker(tripOverrides(t));
   const card = h('article', { class: 'card trip ' + (ev.result === 'NO-GO' ? 'bad' : ev.result === 'WARN' ? 'warn' : ''), 'data-testid': 'trip-card', 'data-trip': t.no, 'data-chalk': t.chalk || '', 'data-status': t.status, 'data-vehicles': entries.length });
   const plats = [...new Set(entries.map((e) => { const v = ctx.fleetByKey.get(e.vehicle); return v ? vehicleView(v, ctx).platoon : ''; }).filter(Boolean))];
-  card.append(h('div', { class: 'tr-top' }, h('b', null, `#${t.no || ''} · ${multi ? `${entries.length} vehicles` : first ? first.short : 'no vehicle'}`, !multi && fvw ? h('small', null, ' ' + fvw.type) : ''), t.chalk ? h('span', { class: 'chip', 'data-testid': 'trip-chalk' }, 'Chalk ' + t.chalk) : null, plats.map((p) => h('span', { class: 'chip', 'data-testid': 'trip-platoon' }, p)), h('span', { class: 'chip', 'data-testid': 'trip-status' }, t.status), resultChip(ev.result), ovMark ? h('span', { class: 'chip override', 'data-testid': 'trip-override' }, ovMark) : null));
+  card.append(h('div', { class: 'tr-top' }, h('b', null, `#${t.no || ''} · ${multi ? `${entries.length} vehicles` : first ? first.short : 'no vehicle'}`, !multi && fvw ? h('small', null, ' ' + fvw.type) : ''), t.chalk ? h('span', { class: 'chip', 'data-testid': 'trip-chalk' }, 'Chalk ' + t.chalk) : null, plats.map((p) => h('span', { class: 'chip', 'data-testid': 'trip-platoon' }, p)), h('span', { class: 'chip', 'data-testid': 'trip-status' }, t.status), isPastDue(t, ctx.asOf) ? h('span', { class: 'chip nogo', 'data-testid': 'trip-pastdue' }, 'Not back: past due') : null, resultChip(ev.result), ovMark ? h('span', { class: 'chip override', 'data-testid': 'trip-override' }, ovMark) : null));
   card.append(h('div', { class: 'tr-sub' }, tripTimes(t), ' · ', t.dest || h('i', null, 'no destination')));
   // one block per vehicle (matches the chalk): people, trailers, its own go / no-go
   const list = h('div', { class: 'veh-entries', 'data-testid': 'trip-entries' });
@@ -86,7 +88,7 @@ export async function setTripStatus(id, status) {
     if (ev.blocksOut) { await confirmBox({ title: 'NO-GO - cannot go Out', html: h('div', null, h('p', null, ev.nogoEntries && ev.entries.length > 1 ? 'A NO-GO vehicle must be fixed or removed from the trip before it can go Out:' : 'Fix these first:'), reasonList(ev), ev.blockingEntries.some((r) => r.vehicle) ? h('p', { class: 'hint' }, 'A commander can approve a NO-GO vehicle with the Commander override button on the trip (it records the approval; it does not unlock anything).') : null), okText: 'OK', cancelText: 'Close' }); return; }
     if (ev.overriddenEntries.length) { const ok = await confirmBox({ title: 'Go Out under commander override?', okText: 'Go Out', danger: true, html: h('div', null, ev.overriddenEntries.map((r) => h('p', null, h('b', null, `${(r.vehicle && r.vehicle.short) || 'Vehicle'}: Commander override: ${r.override.override.by}`), h('br'), `Reason: ${r.override.override.reason}`)), reasonList(ev)) }); if (!ok) return; }
     else if (ev.result === 'WARN') { const ok = await confirmBox({ title: 'Go Out with warnings?', html: h('div', null, reasonList(ev)), okText: 'Go Out anyway' }); if (!ok) return; }
-    t.status = 'Out'; if (!t.dateOut) t.dateOut = todayISO(); if (!t.timeOut) t.timeOut = nowHHMM();
+    t.status = 'Out'; if (!t.dateOut) t.dateOut = todayISO(); if (!t.timeOut) t.timeOut = nowHHMM(); t.outCheck = outCheckOf(ev);
   } else if (status === 'Back') { t.status = 'Back'; if (!t.dateBack) t.dateBack = todayISO(); if (!t.timeBack) t.timeBack = nowHHMM(); }
   else if (status === 'Cancelled') { if (!(await confirmBox({ title: 'Cancel this trip?', message: 'It stays in the log as Cancelled.', okText: 'Cancel trip', cancelText: 'Keep', danger: true }))) return; t.status = 'Cancelled'; }
   commit(); toast(`Trip #${t.no} → ${t.status}`);
@@ -111,6 +113,7 @@ export function openTripEditor(id, { draft: preset = null } = {}) {
           if (ev.nogoEntries && ev.nogoEntries.length && draft.entries.length > 1 && evOut.blockingEntries.length) checks.append(h('p', { class: 'tr-msg bad', 'data-testid': 'nogo-note' }, `NO-GO vehicle${evOut.blockingEntries.length > 1 ? 's' : ''}: ${evOut.blockingEntries.map((r) => (r.vehicle && r.vehicle.short) || 'no vehicle').join(', ')}. Remove or fix ${evOut.blockingEntries.length > 1 ? 'them' : 'it'}${evOut.blockingEntries.some((r) => r.vehicle) ? ' (or record a Commander override)' : ''} before the trip can be marked Out (you can still save it as Planned).`));
           if (evOut.overriddenEntries.length && !evOut.blocksOut) checks.append(h('p', { class: 'tr-msg warn', 'data-testid': 'override-note' }, `Out is allowed only because of a commander override (${[...new Set(evOut.overriddenEntries.map((r) => r.override.override.by))].join(', ')}). It is a record, not a lock.`));
           checks.append(reasonList(ev));
+          if (draft.status === 'Out' && draft.outCheck) checks.append(h('p', { class: 'hint', 'data-testid': 'out-check' }, `At Out (${stampText(draft.outCheck.at)}): ${draft.outCheck.result}${(draft.outCheck.warnings || []).length ? ' - ' + draft.outCheck.warnings.map(String).join('; ') : ''}${(draft.outCheck.blockers || []).length ? ' - NO-GO under override: ' + draft.outCheck.blockers.map(String).join('; ') : ''}`));
         } else checks.append(h('p', { class: 'muted' }, 'Checks are skipped for Back / Cancelled trips.'));
         draw();
       };
@@ -189,12 +192,24 @@ export function openTripEditor(id, { draft: preset = null } = {}) {
         existing ? h('button', { class: 'btn danger', type: 'button', 'data-testid': 'trip-delete', onClick: async () => { if (await confirmBox({ title: 'Delete this trip?', message: 'This removes it from the log. Use Cancelled to keep a record.', okText: 'Delete', danger: true })) { st.trips = st.trips.filter((t) => t.id !== draft.id); commit(); api.close(); toast('Trip deleted'); } } }, 'Delete') : null,
         h('button', { class: 'btn', type: 'button', onClick: () => api.close() }, 'Cancel'),
         h('button', { class: 'btn primary', type: 'button', 'data-testid': 'trip-save', onClick: () => {
-          if (draft.status === 'Out') { const e2 = evaluateTrip(draft, getCtx()); if (e2.blocksOut) { toast(draft.entries.length > 1 ? 'NO-GO: a NO-GO vehicle must be fixed or removed before the trip can go Out. Or save as Planned.' : 'NO-GO: cannot mark Out. Fix the reasons shown, or save as Planned.', 'bad'); return; } if (!draft.timeOut) draft.timeOut = nowHHMM(); }
+          // The Out gate applies when the trip is being set Out (or its vehicles / crew change to something NO-GO). Other edits to a trip that is
+          // already Out are saved even if a vehicle has gone NMC since: that NO-GO is shown as a warning, never as a refusal (Back and Cancel always work).
+          const wasOut = !!existing && existing.status === 'Out'; let outWarn = '';
+          if (draft.status === 'Out') {
+            const ctx3 = getCtx(); const e2 = evaluateTrip(draft, ctx3);
+            if (e2.blocksOut) {
+              const fresh = wasOut ? newBlockingReasons(existing, draft, ctx3) : e2.blockers;
+              if (!wasOut || fresh.length) { toast(wasOut ? `NO-GO: ${fresh[0].msg}. Fix it or undo that change (the trip is already Out).` : draft.entries.length > 1 ? 'NO-GO: a NO-GO vehicle must be fixed or removed before the trip can go Out. Or save as Planned.' : 'NO-GO: cannot mark Out. Fix the reasons shown, or save as Planned.', 'bad'); return; }
+              outWarn = `Saved. This trip is Out and now NO-GO: ${tripSummaryMessage(e2)}`;
+            }
+            if (!draft.timeOut) draft.timeOut = nowHHMM();
+            if (!wasOut) draft.outCheck = outCheckOf(e2);
+          }
           if (draft.status === 'Back') { if (!draft.dateBack) draft.dateBack = todayISO(); if (!draft.timeBack) draft.timeBack = nowHHMM(); }
           if (!existing) { st.chalkSeq = (st.chalkSeq || 0) + 1; draft.no = st.chalkSeq; st.trips.push(draft); } else Object.assign(existing, draft);
           const oldChalk = existing ? +existing.chalk || 0 : 0;
           for (const e of draft.entries) { if (!e.vehicle) continue; if (draft.chalk) assignVehicleToChalk(st, e.vehicle, +draft.chalk, { trips: false }); else if (isActiveTrip(draft) && existing && +st.chalkPlan.assign[e.vehicle] === oldChalk) assignVehicleToChalk(st, e.vehicle, 0, { trips: false }); }
-          commit(); api.close(); toast(`Trip #${draft.no} saved`);
+          commit(); api.close(); if (outWarn) toast(outWarn, 'bad'); else toast(`Trip #${draft.no} saved`);
         } }, 'Save trip'));
     } });
 }

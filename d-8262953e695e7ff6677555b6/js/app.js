@@ -5,6 +5,7 @@ import { renderDispatch } from './views/dispatch.js';
 import { renderFleet } from './views/fleet.js';
 import { renderRoster } from './views/roster.js';
 import { renderMore } from './views/more.js';
+import { renderBanners, setUpdateReady } from './banners.js';
 import { loadPhotoIndex, reconcilePhotos, pruneFaultPhotos, onPhotosChanged } from './photos.js';
 
 const ROUTES = { today: ['Today', renderToday], dispatch: ['Dispatch', renderDispatch], fleet: ['Fleet', renderFleet], roster: ['Roster', renderRoster], more: ['More', renderMore] };
@@ -22,13 +23,14 @@ export function render() {
   catch (e) { console.error(e); main.append(h('div', { class: 'card bad' }, 'Something went wrong drawing this screen: ' + e.message)); }
   $$('.tabbar a').forEach((a) => { const on = a.dataset.tab === tab; a.classList.toggle('on', on); if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   if (fresh) window.scrollTo(0, scrollMemo[tab] && current && current.tab === tab ? scrollMemo[tab] : 0);
-  current = { tab, rest };
+  current = { tab, rest }; renderBanners();
 }
 
 async function boot() {
   await store.load();
   await loadPhotoIndex(); reconcilePhotos(store.state.fleet).catch(() => {});
   if (store.loaded) pruneFaultPhotos(store.state.forms).catch(() => {}); // fault photos of worksheets / faults that no longer exist (only when the saved state really loaded)
+  store.onStatus(() => renderBanners());
   store.subscribe(() => { if (!document.querySelector('.sheet-wrap') || true) renderKeepScroll(); });
   onPhotosChanged(() => renderKeepScroll());
   window.addEventListener('hashchange', () => { closeAllSheets(); render(); });
@@ -44,7 +46,7 @@ function renderKeepScroll() { const y = window.scrollY; render(); window.scrollT
 function registerSW() {
   if (!('serviceWorker' in navigator)) return;
   const hadController = !!navigator.serviceWorker.controller;
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) toast('App updated. Close and reopen (or tap More > Reload) to use the new version.'); });
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) setUpdateReady(); }); // sticky banner with a Reload button (a toast disappears before it is read)
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
     const check = () => { if (navigator.onLine) reg.update().catch(() => {}); };
     check(); window.addEventListener('online', check); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });

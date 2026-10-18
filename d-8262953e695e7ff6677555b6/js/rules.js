@@ -1,5 +1,5 @@
 // Business rules (mirrors the spreadsheet system's rules). Pure functions - no DOM, no storage.
-import { parseDateLoose, daysBetween, todayISO, clean, normKeyText, uid } from './util.js';
+import { parseDateLoose, daysBetween, dayNum, todayISO, clean, normKeyText, uid } from './util.js';
 
 export const DEFAULT_PREFIXES = []; // optional extra prefixes to strip; a leading unit code before the final "A-123" style token is detected automatically
 export const DEFAULT_TURNED_IN = []; // editable in Settings (turned in / off the books)
@@ -169,12 +169,33 @@ export function asOfDate(settings, now = new Date()) { return parseDateLoose(set
 
 // ---------- trips / busy ----------
 export const isActiveTrip = (t) => t.status === 'Planned' || t.status === 'Out';
-/** Do two trips collide? same rule for vehicles, towed items and people. */
-export function tripsOverlap(a, b) {
+/** minutes since midnight of an "HHMM" time, or null when blank / unreadable */
+const hhmmMin = (t) => { const m = /^(\d{2})(\d{2})$/.exec(String(t == null ? '' : t)); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+/** The period a trip keeps its vehicles / people busy: {known, start, end} in minutes (day number * 1440 + minutes; end may be Infinity).
+ *  dateBack defaults to dateOut. A day without a time counts as the whole day (start 0000, end 2359), so unknown times are never treated as free.
+ *  An Out trip is physically out NOW: it starts no later than `asOf`, and once its return date has passed without it being set Back it stays busy
+ *  (open ended) until it is set Back - a missing vehicle is a real risk. A trip with no date out cannot be placed in time and collides with everything. */
+export function tripSpan(t, asOf = todayISO()) {
+  const out = t.status === 'Out'; const d0 = parseDateLoose(t.dateOut);
+  if (!d0) return { known: false, start: -Infinity, end: Infinity, overdue: false };
+  let d1 = parseDateLoose(t.dateBack) || d0; if (d1 < d0) d1 = d0; // a return before the departure is flagged elsewhere (DATE_BACK)
+  const a = parseDateLoose(asOf) || todayISO(); const overdue = out && d1 < a;
+  const t0 = hhmmMin(t.timeOut), t1 = hhmmMin(t.timeBack);
+  let start = dayNum(d0) * 1440 + (t0 == null ? 0 : t0); let end = overdue ? Infinity : dayNum(d1) * 1440 + (t1 == null ? 1439 : t1);
+  if (out) start = Math.min(start, dayNum(a) * 1440);
+  if (end < start) end = start;
+  return { known: true, start, end, overdue };
+}
+/** An Out trip whose return date (dateBack, else dateOut) is before `asOf` and that has not been set Back. */
+export const isPastDue = (t, asOf = todayISO()) => t.status === 'Out' && tripSpan(t, asOf).overdue;
+/** Do two trips collide? Same rule for vehicles, towed items and people: the date ranges dateOut..dateBack (with times when they exist) intersect.
+ *  Planned trips on different, non-overlapping days do not collide; an Out trip is busy through its return date and beyond while it is overdue.
+ *  `asOf` (ctx.asOf) is the as-of day used for the overdue rule; it defaults to the local today. */
+export function tripsOverlap(a, b, asOf = todayISO()) {
   if (!isActiveTrip(a) || !isActiveTrip(b)) return false;
-  if (a.status === 'Out' || b.status === 'Out') return true;
-  if (!a.dateOut || !b.dateOut) return true;
-  return a.dateOut === b.dateOut;
+  const x = tripSpan(a, asOf), y = tripSpan(b, asOf);
+  if (!x.known || !y.known) return true;
+  return x.start <= y.end && y.start <= x.end;
 }
 // ---------- trip shape: header + ordered vehicle entries (schema 2) ----------
 // trip = {id, no, chalk, status, dateOut, timeOut, dateBack, timeBack, dest, dispatcher, notes, entries:[entry]}
@@ -201,8 +222,8 @@ export function tripVehicleKeys(t) { return tripEntries(t).flatMap((e) => [e.veh
 /** keys of the primary vehicles (not trailers) on a trip */
 export function tripMainKeys(t) { return tripEntries(t).map((e) => e.vehicle).filter(Boolean); }
 /** other active trips that collide with `cand` and use this vehicle/towed key */
-export function vehicleConflicts(key, cand, trips) { return trips.filter((t) => t.id !== cand.id && tripsOverlap(t, cand) && tripVehicleKeys(t).includes(key)); }
-export function personConflicts(id, cand, trips) { return trips.filter((t) => t.id !== cand.id && tripsOverlap(t, cand) && tripPeople(t).some(([, pid]) => pid === id)); }
+export function vehicleConflicts(key, cand, trips, asOf) { return trips.filter((t) => t.id !== cand.id && tripsOverlap(t, cand, asOf) && tripVehicleKeys(t).includes(key)); }
+export function personConflicts(id, cand, trips, asOf) { return trips.filter((t) => t.id !== cand.id && tripsOverlap(t, cand, asOf) && tripPeople(t).some(([, pid]) => pid === id)); }
 
 // ---------- roster ----------
 export function normStatusName(raw, settings) {
@@ -254,7 +275,7 @@ export function fleetCounts(ctx) {
     if (vw.status === 'TURNED IN') { c.turnedIn++; continue; }
     c.onHand++;
     if (vw.status === 'FMC') c.fmc++; else if (vw.status === 'NMCM') c.nmcm++; else if (vw.status === 'NMCS') c.nmcs++; else if (vw.status === 'NMC-X') c.nmcx++; else c.unknown++;
-    const free = vehicleConflicts(v.key, probe, ctx.trips).length === 0;
+    const free = vehicleConflicts(v.key, probe, ctx.trips, ctx.asOf).length === 0;
     if (vehicleUsable(vw) && free) c.dispatchable++;
     if (towedUsable(vw) && free) c.towable++;
     if (!free) c.vehiclesOut++;
@@ -265,10 +286,12 @@ export const pct = (r) => `${(Math.round(r * 10000) / 100).toFixed(2)}%`;
 
 // ---------- the GO / WARN / NO-GO engine ----------
 const LICMSG = { MISSING: 'LICENSE DATE MISSING', INVALID: 'LICENSE DATE UNREADABLE', EXPIRED: 'LICENSE EXPIRED' };
+/** a fleet record whose description / model reads like a trailer or towed asset (used only to word the unmapped-model warning) */
+const looksLikeTrailer = (v) => /\b(TRL|TRLR|TRAILER|SEMITRAILER|SEMI-TRAILER|LOWBOY|LOW BOY|WATER BUFFALO|BUFFALO|M149|M1101|M1095|M870|GENERATOR|GEN SET|LIGHT SET)\b/i.test(`${v.desc || ''} ${v.model || ''}`);
 /** Evaluate one vehicle entry of a trip. `seen` (person id -> label) is shared across the whole trip so one person on two vehicles is caught. */
 function evaluateEntry(entry, trip, ctx, { seen, prefix, usedKeys }) {
   const st = ctx.settings; const res = { entry, result: '', blockers: [], warnings: [], driverGcssId: '', tcGcssId: '', vehicleType: '', vehicleStatus: '', vehicle: null };
-  const B = (code, msg) => res.blockers.push({ code, msg: prefix + msg, raw: msg, entry: entry.id }); const W = (code, msg) => res.warnings.push({ code, msg: prefix + msg, raw: msg, entry: entry.id });
+  const B = (code, msg, pid) => res.blockers.push({ code, msg: prefix + msg, raw: msg, entry: entry.id, ...(pid ? { pid } : {}) }); const W = (code, msg, pid) => res.warnings.push({ code, msg: prefix + msg, raw: msg, entry: entry.id, ...(pid ? { pid } : {}) });
   const evalDate = parseDateLoose(trip.dateOut) || ctx.asOf; const win = Math.max(0, +st.licenseWindow || 0);
   let vview = null;
   if (!entry.vehicle) B('NO_VEHICLE', 'NO VEHICLE SELECTED');
@@ -285,59 +308,66 @@ function evaluateEntry(entry, trip, ctx, { seen, prefix, usedKeys }) {
       else if (vview.cls === 'Mounted') B('VEH_CLASS', 'MOUNTED ITEM CANNOT BE DISPATCHED ALONE');
       if (vview.gcssNotDispatchable) B('VEH_GCSS_ND', 'GCSS SAYS NOT DISPATCHABLE');
       if (!vview.ruleOk) B('VEH_RULE', vview.ruleProblem);
-      if (vehicleConflicts(v.key, trip, ctx.trips).length) B('VEH_BUSY', 'VEHICLE IS ALSO ON ANOTHER ACTIVE TRIP');
+      if (vehicleConflicts(v.key, trip, ctx.trips, ctx.asOf).length) B('VEH_BUSY', 'VEHICLE IS ALSO ON ANOTHER ACTIVE TRIP');
       if (usedKeys.has(v.key)) B('VEH_TWICE', 'VEHICLE IS LISTED TWICE ON THIS TRIP');
       usedKeys.add(v.key);
       if (vview.source === 'override' && vview.status === 'FMC') W('VEH_LOCAL', 'VEHICLE STATUS FMC IS A LOCAL (WALK-AROUND) CHANGE, NOT CONFIRMED IN GCSS');
     }
   }
   const person = (id) => ctx.rosterById.get(id);
-  const seenCheck = (label, id) => { if (!id) return; if (seen.has(id)) B('PERSON_TWICE', `${label.toUpperCase()}: SAME PERSON LISTED TWICE ON THIS TRIP (${seen.get(id)} and ${label})`); else seen.set(id, label); };
+  const seenCheck = (label, id) => { if (!id) return; if (seen.has(id)) B('PERSON_TWICE', `${label.toUpperCase()}: SAME PERSON LISTED TWICE ON THIS TRIP (${seen.get(id)} and ${label})`, id); else seen.set(id, label); };
   if (!entry.driver) B('NO_DRIVER', 'NO DRIVER SELECTED');
   else {
     const d = person(entry.driver); seenCheck('Driver', entry.driver);
-    if (!d) B('DRV_NOT_FOUND', 'DRIVER NOT ON ROSTER (pick from list)');
+    if (!d) B('DRV_NOT_FOUND', 'DRIVER NOT ON ROSTER (pick from list)', entry.driver);
     else {
       res.driverGcssId = clean(d.gcssId);
-      if (!personAvailable(d, st)) B('DRV_INACTIVE', `DRIVER NOT ACTIVE (${d.status || 'no status'})`);
+      if (!personAvailable(d, st)) B('DRV_INACTIVE', `DRIVER NOT ACTIVE (${d.status || 'no status'})`, d.id);
       const ls = licenseState(d, evalDate, win);
-      if (LICMSG[ls]) B('DRV_LIC', 'DRIVER ' + LICMSG[ls]); else if (ls === 'EXPIRING') W('DRV_LIC_SOON', `DRIVER LICENSE EXPIRES WITHIN ${win} DAYS (${d.licExp})`);
-      if (vview && vview.mapped && vview.ruleOk && vview.qual && vview.qual !== 'NONE' && !hasQual(d, vview.qual)) B('DRV_QUAL', `DRIVER NOT QUALIFIED ON ${vview.type}`);
-      if (personConflicts(d.id, trip, ctx.trips).length) B('DRV_BUSY', 'DRIVER IS ALSO ON ANOTHER ACTIVE TRIP');
-      if (!res.driverGcssId && st.gcssIdRule !== 'OFF') (st.gcssIdRule === 'BLOCK' ? B : W)('DRV_GCSS_ID', 'DRIVER HAS NO GCSS-ARMY ID (needed to enter the dispatch in GCSS-Army)');
+      const ends = parseDateLoose(trip.dateBack); const midTrip = !LICMSG[ls] && ends && ends > evalDate && d.licExp && parseDateLoose(d.licExp) < ends; // valid when the trip leaves, expired before it ends
+      if (LICMSG[ls]) B('DRV_LIC', 'DRIVER ' + LICMSG[ls], d.id); else if (midTrip) W('DRV_LIC_TRIP', `DRIVER LICENSE EXPIRES ${d.licExp} BEFORE THE TRIP ENDS (${trip.dateBack})`, d.id); else if (ls === 'EXPIRING') W('DRV_LIC_SOON', `DRIVER LICENSE EXPIRES WITHIN ${win} DAYS (${d.licExp})`, d.id);
+      if (vview && vview.mapped && vview.ruleOk && vview.qual && vview.qual !== 'NONE' && !hasQual(d, vview.qual)) B('DRV_QUAL', `DRIVER NOT QUALIFIED ON ${vview.type}`, d.id);
+      if (personConflicts(d.id, trip, ctx.trips, ctx.asOf).length) B('DRV_BUSY', 'DRIVER IS ALSO ON ANOTHER ACTIVE TRIP', d.id);
+      if (!res.driverGcssId && st.gcssIdRule !== 'OFF') (st.gcssIdRule === 'BLOCK' ? B : W)('DRV_GCSS_ID', 'DRIVER HAS NO GCSS-ARMY ID (needed to enter the dispatch in GCSS-Army)', d.id);
       for (const tk of entry.towed || []) {
         const tv = ctx.fleetByKey.get(tk); if (!tv) continue; const tw = vehicleView(tv, ctx);
-        if (tw.ruleOk && tw.qual && tw.qual !== 'NONE' && !hasQual(d, tw.qual)) W('TOW_QUAL', `DRIVER NOT QUALIFIED ON TOWED ITEM (${tw.type})`);
+        if (tw.ruleOk && tw.qual && tw.qual !== 'NONE' && !hasQual(d, tw.qual)) W('TOW_QUAL', `DRIVER NOT QUALIFIED ON TOWED ITEM (${tw.type})`, d.id);
       }
     }
   }
   if (entry.tc) {
     const c = person(entry.tc); seenCheck('TC / A-driver', entry.tc);
-    if (!c) B('TC_NOT_FOUND', 'TC / A-DRIVER NOT ON ROSTER');
+    if (!c) B('TC_NOT_FOUND', 'TC / A-DRIVER NOT ON ROSTER', entry.tc);
     else {
       res.tcGcssId = clean(c.gcssId);
-      if (!personAvailable(c, st)) B('TC_INACTIVE', 'TC / A-DRIVER NOT ACTIVE');
-      if (personConflicts(c.id, trip, ctx.trips).length) B('TC_BUSY', 'TC / A-DRIVER IS ALSO ON ANOTHER ACTIVE TRIP');
+      if (!personAvailable(c, st)) B('TC_INACTIVE', 'TC / A-DRIVER NOT ACTIVE', c.id);
+      if (personConflicts(c.id, trip, ctx.trips, ctx.asOf).length) B('TC_BUSY', 'TC / A-DRIVER IS ALSO ON ANOTHER ACTIVE TRIP', c.id);
       const ls = licenseState(c, evalDate, win);
-      if (LICMSG[ls]) (String(st.tcRule).toUpperCase() === 'BLOCK' ? B : W)('TC_LIC', 'TC / A-DRIVER ' + LICMSG[ls]);
-      else if (ls === 'EXPIRING') W('TC_LIC_SOON', 'TC / A-DRIVER LICENSE EXPIRES SOON');
-      if (st.tcQualWarn && vview && vview.ruleOk && vview.qual && vview.qual !== 'NONE' && !hasQual(c, vview.qual)) W('TC_QUAL', `TC / A-DRIVER NOT QUALIFIED ON ${vview.type}`);
-      if (!res.tcGcssId && st.gcssIdRule !== 'OFF') W('TC_GCSS_ID', 'TC / A-DRIVER HAS NO GCSS-ARMY ID');
+      if (LICMSG[ls]) (String(st.tcRule).toUpperCase() === 'BLOCK' ? B : W)('TC_LIC', 'TC / A-DRIVER ' + LICMSG[ls], c.id);
+      else if (ls === 'EXPIRING') W('TC_LIC_SOON', 'TC / A-DRIVER LICENSE EXPIRES SOON', c.id);
+      if (st.tcQualWarn && vview && vview.ruleOk && vview.qual && vview.qual !== 'NONE' && !hasQual(c, vview.qual)) W('TC_QUAL', `TC / A-DRIVER NOT QUALIFIED ON ${vview.type}`, c.id);
+      if (!res.tcGcssId && st.gcssIdRule !== 'OFF') W('TC_GCSS_ID', 'TC / A-DRIVER HAS NO GCSS-ARMY ID', c.id);
     }
   }
   (entry.pax || []).forEach((id, i) => {
     if (!id) return; const label = `Pax ${i + 1}`; const p = person(id); seenCheck(label, id);
-    if (!p) B('PAX_NOT_FOUND', `${label.toUpperCase()} NOT ON ROSTER`);
-    else { if (!personAvailable(p, st)) B('PAX_INACTIVE', `${label.toUpperCase()} NOT ACTIVE`); if (personConflicts(p.id, trip, ctx.trips).length) B('PAX_BUSY', `${label.toUpperCase()} IS ALSO ON ANOTHER ACTIVE TRIP`); }
+    if (!p) B('PAX_NOT_FOUND', `${label.toUpperCase()} NOT ON ROSTER`, id);
+    else { if (!personAvailable(p, st)) B('PAX_INACTIVE', `${label.toUpperCase()} NOT ACTIVE`, p.id); if (personConflicts(p.id, trip, ctx.trips, ctx.asOf).length) B('PAX_BUSY', `${label.toUpperCase()} IS ALSO ON ANOTHER ACTIVE TRIP`, p.id); }
   });
   for (const tk of entry.towed || []) {
     const tv = ctx.fleetByKey.get(tk);
     if (!tv) { B('TOW_NOT_FOUND', 'TOWED ITEM NOT IN FLEET LIST'); continue; }
     const tw = vehicleView(tv, ctx); const nm = tv.short || tv.bumper;
-    if (tw.cls === 'Towed' && tw.status !== 'FMC') B('TOW_STATUS', `TOWED ITEM ${nm} IS ${tw.status}`);
-    if (tw.cls !== 'Towed') W('TOW_CLASS', `TOWED ITEM ${nm} IS NOT A TRAILER TYPE (recovery tow?)`);
+    // status gates apply to EVERY towed item whatever its mapped class (a recovery tow or an unmapped model must not fail open)
+    if (tw.status === 'TURNED IN') B('TOW_STATUS', `TOWED ITEM ${nm} WAS TURNED IN (off the books)`);
+    else if (tw.status === 'NMC-X') B('TOW_STATUS', `TOWED ITEM ${nm} IS NMC-X (permanent NMC)`);
+    else if (tw.status === 'NMCM' || tw.status === 'NMCS') B('TOW_STATUS', `TOWED ITEM ${nm} IS ${tw.status}`);
+    else if (tw.cls === 'Towed' && tw.status !== 'FMC') B('TOW_STATUS', `TOWED ITEM ${nm} IS ${tw.status}`);
+    if (tw.gcssNotDispatchable) B('TOW_GCSS_ND', `TOWED ITEM ${nm}: GCSS SAYS NOT DISPATCHABLE`);
+    if (tw.cls === 'Unmapped') W('TOW_UNMAPPED', `TOWED ITEM ${nm}: MODEL NOT IN TYPE MAP${looksLikeTrailer(tv) ? ' (looks like a trailer: add it to the Type map as Towed)' : ' AND IT DOES NOT LOOK LIKE A TRAILER (check it is really being towed)'}`);
+    else if (tw.cls !== 'Towed') W('TOW_CLASS', `TOWED ITEM ${nm} IS NOT A TRAILER TYPE (recovery tow?)`);
     if (tw.cls === 'Towed' && !tw.ruleOk && tw.mapped) W('TOW_RULE', `NO QUALIFICATION RULE FOR TOWED TYPE ${tw.type}`);
-    if (vehicleConflicts(tv.key, trip, ctx.trips).length) B('TOW_BUSY', `TOWED ITEM ${nm} IS ALSO ON ANOTHER ACTIVE TRIP`);
+    if (vehicleConflicts(tv.key, trip, ctx.trips, ctx.asOf).length) B('TOW_BUSY', `TOWED ITEM ${nm} IS ALSO ON ANOTHER ACTIVE TRIP`);
     if (usedKeys.has(tk)) B('TOW_TWICE', `TOWED ITEM ${nm} IS ALSO LISTED ON ANOTHER VEHICLE OF THIS TRIP`);
     usedKeys.add(tk);
     if (tk === entry.vehicle) B('TOW_SELF', 'VEHICLE CANNOT TOW ITSELF');
@@ -373,13 +403,30 @@ export function evaluateTrip(trip, ctx) {
   res.result = res.blockers.length ? 'NO-GO' : res.warnings.length ? 'WARN' : 'GO';
   return res;
 }
+/** NO-GO reasons that `next` (an edited copy of an Out trip) has and `prev` (the saved trip, evaluated as Out) did not. Only reasons that still block Out count
+ *  (an overridden vehicle is not "blocking"). A reason is identified by trip entry, vehicle, code, text and person, so swapping in a different blocked
+ *  vehicle or person is NEW even when the text is the same. Used so that saving other edits to an already-Out trip is not refused because of an
+ *  old NO-GO (a vehicle that went NMC after it left), while changing to a blocked vehicle / person still is. */
+export function newBlockingReasons(prev, next, ctx) {
+  const evOf = (t) => evaluateTrip({ ...t, status: 'Out' }, ctx);
+  const sigs = (t, ev, only) => { const veh = new Map(tripEntries(t).map((e) => [e.id, e.vehicle])); return ev.blockers.filter(only).map((b) => ({ b, sig: `${b.entry || ''}|${veh.get(b.entry) || ''}|${b.code}|${b.raw || b.msg}|${b.pid || ''}` })); };
+  const e0 = evOf(prev), e1 = evOf(next); const old = new Set(sigs(prev, e0, () => true).map((x) => x.sig));
+  const blocking = new Set(e1.blockingEntries.map((r) => r.entry.id));
+  return sigs(next, e1, (b) => !b.entry || blocking.has(b.entry)).filter((x) => !old.has(x.sig)).map((x) => x.b);
+}
+/** what to remember about the check at the moment a trip went Out: {at, result, warnings[], blockers[]} (messages only; blockers are present only under a commander override) */
+export function outCheckOf(ev, now = new Date()) { return { at: now.toISOString(), result: ev.result, warnings: ev.warnings.map((w) => w.msg), blockers: ev.blockers.map((b) => b.msg) }; }
 // ---------- commander override of NO-GO vehicles ----------
-// entry.override = {by, reason, at (ISO time), vehicle (fleet key it was given for), reasons:[{code, msg}] (the NO-GO reasons that were overridden)}.
+// entry.override = {by, reason, at (ISO time), vehicle (fleet key it was given for), reasons:[{code, msg, pid?}] (the NO-GO reasons that were overridden, with the person they were about),
+//   driver, tc, pax[], towed[] (the crew and trailers it was given for; ids)}. An override recorded before the crew was kept has none of those four fields: it is LEGACY (see overrideStatus).
 // It RECORDS an approval (a typed name + reason). It is not a login or a lock: anyone holding the phone can type a name.
 // Without a valid override a NO-GO vehicle still blocks Out exactly as before. An override only covers the reasons recorded when it was given:
-// a new NO-GO reason (different driver, another fault ...) is not covered, and changing the vehicle drops it.
-/** reasons that are data errors, not a readiness call a commander can accept (nothing real to dispatch / the same item twice) */
-export const NON_OVERRIDABLE = ['NO_VEHICLE', 'VEH_NOT_FOUND', 'VEH_TWICE', 'TOW_SELF', 'TOW_TWICE', 'TOW_NOT_FOUND', 'PERSON_TWICE', 'STATUS_BAD'];
+// a new NO-GO reason (another fault ...) is not covered, and changing the vehicle drops it. A different driver / TC / passenger / towed item makes it OUTDATED (it no longer covers), because it was a decision about those people and that load.
+/** Reasons no commander can waive. (a) data errors: nothing real to dispatch / the same item twice. (b) legal / readiness limits: an expired, missing or unreadable
+ *  driver license date, a permanent-NMC (X, deadlined) vehicle and a turned-in (off the books) vehicle. NMCM / NMCS status, qualification gaps, PMCS, busy
+ *  crews, GCSS ID rules etc. stay overridable. */
+export const NON_OVERRIDABLE = ['NO_VEHICLE', 'VEH_NOT_FOUND', 'VEH_TWICE', 'TOW_SELF', 'TOW_TWICE', 'TOW_NOT_FOUND', 'PERSON_TWICE', 'STATUS_BAD', 'DRV_LIC', 'VEH_NMCX', 'VEH_TURNED_IN'];
+export const NON_OVERRIDABLE_WHY = 'A commander cannot waive a license requirement or dispatch a deadlined (X) or turned-in vehicle, and data errors (no vehicle, the same vehicle or person twice, a trailer towing itself) are not a readiness call. Fix or remove them.';
 export const OVERRIDE_NAME_MAX = 80, OVERRIDE_REASON_MAX = 300;
 const reasonKey = (r) => `${r.code}|${r.raw || r.msg}`;
 const oneLine = (x, max) => String(x == null ? '' : x).replace(/\s+/g, ' ').trim().slice(0, max);
@@ -393,9 +440,20 @@ export function cleanOverride(e) {
   const o = e && e.override; if (o === undefined) return e;
   const ok = o && typeof o === 'object' && !Array.isArray(o) && oneLine(o.by, OVERRIDE_NAME_MAX) && oneLine(o.reason, OVERRIDE_REASON_MAX);
   if (!ok) { delete e.override; return e; }
+  const idl = (a) => (Array.isArray(a) ? a : []).filter((x) => typeof x === 'string' && x);
+  const crew = ['driver', 'tc', 'pax', 'towed'].some((k) => o[k] !== undefined) ? { driver: typeof o.driver === 'string' ? o.driver : '', tc: typeof o.tc === 'string' ? o.tc : '', pax: idl(o.pax), towed: idl(o.towed) } : {};
   e.override = { by: oneLine(o.by, OVERRIDE_NAME_MAX), reason: oneLine(o.reason, OVERRIDE_REASON_MAX), at: typeof o.at === 'string' ? o.at : '', vehicle: typeof o.vehicle === 'string' ? o.vehicle : '',
-    reasons: (Array.isArray(o.reasons) ? o.reasons : []).filter((r) => r && typeof r === 'object' && typeof r.code === 'string').map((r) => ({ code: r.code, msg: String(r.msg == null ? '' : r.msg) })) };
+    reasons: (Array.isArray(o.reasons) ? o.reasons : []).filter((r) => r && typeof r === 'object' && typeof r.code === 'string').map((r) => ({ code: r.code, msg: String(r.msg == null ? '' : r.msg), ...(typeof r.pid === 'string' && r.pid ? { pid: r.pid } : {}) })), ...crew };
   return e;
+}
+/** the crew an override was given for ({driver, tc, pax, towed}), or null for a legacy override that did not record it */
+export const overrideCrew = (o) => (o && ['driver', 'tc', 'pax', 'towed'].some((k) => o[k] !== undefined) ? { driver: o.driver || '', tc: o.tc || '', pax: [...(o.pax || [])].sort(), towed: [...(o.towed || [])].sort() } : null);
+const crewOf = (e) => ({ driver: e.driver || '', tc: e.tc || '', pax: [...(e.pax || [])].filter(Boolean).sort(), towed: [...(e.towed || [])].filter(Boolean).sort() });
+/** which roles differ between the recorded crew and the entry's current crew: [] when equal */
+export function crewChanges(o, entry) {
+  const a = overrideCrew(o); if (!a) return []; const b = crewOf(entry); const out = [];
+  if (a.driver !== b.driver) out.push('driver'); if (a.tc !== b.tc) out.push('TC / A-driver'); if (a.pax.join('|') !== b.pax.join('|')) out.push('passengers'); if (a.towed.join('|') !== b.towed.join('|')) out.push('trailers / towed');
+  return out;
 }
 /** state of an entry's override against its current evaluation `er`: null (none) | {override, covers, needed, extra[]}.
  *  covers: the entry is NO-GO and every current NO-GO reason (and the vehicle) is one the commander accepted. needed: the entry is NO-GO now. */
@@ -404,14 +462,15 @@ export function overrideStatus(entry, er) {
   const needed = !!er && er.result === 'NO-GO'; const have = new Set((o.reasons || []).map(reasonKey));
   const extra = needed ? er.blockers.filter((b) => !have.has(reasonKey(b)) || NON_OVERRIDABLE.includes(b.code)) : [];
   const sameVehicle = !!entry.vehicle && o.vehicle === entry.vehicle;
-  return { override: o, needed, extra, sameVehicle, covers: needed && sameVehicle && !extra.length };
+  const legacy = !overrideCrew(o); const changed = legacy ? [] : crewChanges(o, entry); const sameCrew = !changed.length;
+  return { override: o, needed, extra, sameVehicle, sameCrew, crewChanged: changed, legacy, covers: needed && sameVehicle && sameCrew && !extra.length };
 }
 /** can this entry (evaluated as `er`, ideally on an Out probe so Out-only reasons like PMCS are included) be overridden? -> {ok, reasons[], error} */
 export function canOverrideEntry(er) {
-  if (!er || er.result !== 'NO-GO') return { ok: false, reasons: [], error: 'This vehicle is not NO-GO, so there is nothing to override.' };
+  if (!er || er.result !== 'NO-GO') return { ok: false, reasons: [], blocked: [], error: 'This vehicle is not NO-GO, so there is nothing to override.' };
   const bad = er.blockers.filter((b) => NON_OVERRIDABLE.includes(b.code));
-  if (bad.length) return { ok: false, reasons: er.blockers, error: 'This cannot be overridden: ' + (bad[0].raw || bad[0].msg) + '. Fix or remove it.' };
-  return { ok: true, reasons: er.blockers, error: '' };
+  if (bad.length) return { ok: false, reasons: er.blockers, blocked: bad, error: 'This cannot be overridden: ' + bad.map((b) => b.raw || b.msg).join('; ') + '. ' + NON_OVERRIDABLE_WHY };
+  return { ok: true, reasons: er.blockers, blocked: [], error: '' };
 }
 /** check the typed name + reason: both required (not blank after trimming) -> {ok, by, reason, error} */
 export function checkOverrideInput({ by, reason } = {}) {
@@ -425,7 +484,8 @@ export function applyOverride(entry, er, { by, reason, now = new Date() } = {}) 
   const inp = checkOverrideInput({ by, reason }); if (!inp.ok) return { ok: false, error: inp.error };
   if (!entry || !er || er.entry !== entry) return { ok: false, error: 'That vehicle entry does not match the checks.' };
   const can = canOverrideEntry(er); if (!can.ok) return { ok: false, error: can.error };
-  entry.override = { by: inp.by, reason: inp.reason, at: now.toISOString(), vehicle: entry.vehicle, reasons: can.reasons.map((b) => ({ code: b.code, msg: b.raw || b.msg })) };
+  const c = crewOf(entry); // the decision is about this vehicle, these reasons AND this crew / load
+  entry.override = { by: inp.by, reason: inp.reason, at: now.toISOString(), vehicle: entry.vehicle, reasons: can.reasons.map((b) => ({ code: b.code, msg: b.raw || b.msg, ...(b.pid ? { pid: b.pid } : {}) })), driver: c.driver, tc: c.tc, pax: [...(entry.pax || [])].filter(Boolean), towed: [...(entry.towed || [])].filter(Boolean) };
   return { ok: true, override: entry.override, error: '' };
 }
 /** undo: remove the override from the entry. Returns true when there was one. */
@@ -449,12 +509,12 @@ export function tripSummaryMessage(ev) {
 // ---------- pickers: only usable options ----------
 export function usableVehicles(ctx, trip, { exclude = [] } = {}) {
   const ex = new Set(exclude);
-  return ctx.fleet.map((v) => ({ v, vw: vehicleView(v, ctx) })).filter(({ v, vw }) => !ex.has(v.key) && vehicleUsable(vw) && !vehicleConflicts(v.key, trip, ctx.trips).length)
+  return ctx.fleet.map((v) => ({ v, vw: vehicleView(v, ctx) })).filter(({ v, vw }) => !ex.has(v.key) && vehicleUsable(vw) && !vehicleConflicts(v.key, trip, ctx.trips, ctx.asOf).length)
     .sort((a, b) => a.v.key.localeCompare(b.v.key, 'en', { numeric: true }));
 }
 export function usableTowed(ctx, trip, { exclude = [] } = {}) {
   const ex = new Set([...tripMainKeys(trip), ...exclude]);
-  return ctx.fleet.map((v) => ({ v, vw: vehicleView(v, ctx) })).filter(({ v, vw }) => towedUsable(vw) && !ex.has(v.key) && !vehicleConflicts(v.key, trip, ctx.trips).length)
+  return ctx.fleet.map((v) => ({ v, vw: vehicleView(v, ctx) })).filter(({ v, vw }) => towedUsable(vw) && !ex.has(v.key) && !vehicleConflicts(v.key, trip, ctx.trips, ctx.asOf).length)
     .sort((a, b) => a.v.key.localeCompare(b.v.key, 'en', { numeric: true }));
 }
 /** role: 'driver' (license + qual required) | 'tc' | 'pax' */
@@ -465,7 +525,7 @@ export function usablePeople(ctx, trip, role, vehicleKey, { exclude = [] } = {})
   return ctx.roster.filter((p) => {
     if (!personAvailable(p, ctx.settings)) return false;
     if (ex.has(p.id)) return false;
-    if (personConflicts(p.id, trip, ctx.trips).length) return false;
+    if (personConflicts(p.id, trip, ctx.trips, ctx.asOf).length) return false;
     if (role === 'driver') {
       const ls = licenseState(p, evalDate, win); if (ls === 'MISSING' || ls === 'INVALID' || ls === 'EXPIRED') return false;
       if (vw && vw.ruleOk && vw.qual && vw.qual !== 'NONE' && !hasQual(p, vw.qual)) return false;

@@ -1,14 +1,16 @@
 import { store, S, getCtx, go } from '../ctx.js';
 import { h } from '../dom.js';
-import { tripEntries, fleetCounts, pct, evaluateTrip, gcssIdStats, isActiveTrip, vehicleView, personAvailable, licenseState, asOfDate, tripSummaryMessage, personLabel, tripOverrides, overrideMarker } from '../rules.js';
+import { tripEntries, fleetCounts, pct, evaluateTrip, gcssIdStats, isActiveTrip, vehicleView, personAvailable, licenseState, asOfDate, isPastDue, tripSummaryMessage, personLabel, tripOverrides, overrideMarker } from '../rules.js';
 import { daysBetween, fmtDate, todayISO, localDayOf } from '../util.js';
 import { statusChip, resultChip, tripTimes, nameWithId, piiNote, emptyCard, btn } from '../ui.js';
 import { openTripEditor } from './dispatch.js';
 import { chalkSummary, chalkLabel } from '../chalk.js';
+import { asOfBar } from '../banners.js';
+import { backupStatus } from '../status.js';
 
 export function renderToday(root) {
   const st = S(); const ctx = getCtx(); const c = fleetCounts(ctx); const gi = gcssIdStats(st.roster, st.settings);
-  root.append(piiNote());
+  root.append(asOfBar(), piiNote());
   if (!st.fleet.length || !st.roster.length) {
     root.append(emptyCard('Start here', 'Nothing is loaded yet. Import your fleet (GCSS-Army export) and your roster. Nothing is built in and nothing leaves this phone.',
       btn('Import fleet', () => go('#fleet/import'), 'primary', { 'data-testid': 'start-fleet' }), btn('Import roster', () => go('#roster/import'), 'primary', { 'data-testid': 'start-roster' })));
@@ -23,6 +25,8 @@ export function renderToday(root) {
   const nogo = trips.filter((x) => x.ev.result === 'NO-GO').length, nogoOv = trips.filter((x) => x.ev.result === 'NO-GO' && x.ev.overriddenEntries.length).length, warn = trips.filter((x) => x.ev.result === 'WARN').length;
   if (nogo) att.push(['bad', `${nogo} trip${nogo > 1 ? 's' : ''} NO-GO${nogoOv ? ` (${nogoOv} with commander override)` : ''}`, '#dispatch']);
   if (warn) att.push(['warn', `${warn} trip${warn > 1 ? 's' : ''} with warnings`, '#dispatch']);
+  // Out trips whose return date has passed and that were never set Back: still busy (the vehicle may really be missing) - make that visible
+  { const late = ctx.trips.filter((t) => isPastDue(t, asOf)); if (late.length) att.push(['bad', `Not back: past due - ${late.length} trip${late.length > 1 ? 's' : ''} (${late.slice(0, 4).map((t) => `#${t.no || ''} due ${fmtDate(t.dateBack || t.dateOut)}`).join(', ')}${late.length > 4 ? ', ...' : ''}). Set Back when returned`, '#dispatch']); }
   if (st.roster.length) att.push([gi.missing ? 'orange' : 'ok', `Missing GCSS ID: ${gi.missing} of ${gi.active} Active`, '#roster/missing']);
   const act = st.roster.filter((p) => personAvailable(p, st.settings)); const lic = { EXPIRED: 0, MISSING: 0, EXPIRING: 0, INVALID: 0 };
   act.forEach((p) => { const s = licenseState(p, asOf, st.settings.licenseWindow); if (s in lic) lic[s]++; });
@@ -35,14 +39,17 @@ export function renderToday(root) {
     const um = st.fleet.filter((v) => !vehicleView(v, ctx).mapped && vehicleView(v, ctx).status !== 'TURNED IN').length; if (um) att.push(['warn', `${um} vehicle${um > 1 ? 's' : ''} with a model missing from the Type map (cannot be dispatched)`, '#more/settings']);
     const walked = st.fleet.filter((v) => localDayOf(v.walkAt) === todayISO()).length; att.push(['info', `Walk-around today: ${walked} of ${c.onHand} seen`, '#more/walk']);
   }
+  { const bk = backupStatus(st.ui.lastBackupAt, { hasData: !!(st.roster.length || st.fleet.length || st.trips.length || st.forms.length) }); if (st.roster.length || st.fleet.length || st.trips.length || st.forms.length) att.push([bk.amber ? 'warn' : 'ok', bk.text + (bk.amber ? ' - export a backup (More > Backup)' : ''), '#more/backup']); }
   if (att.length) root.append(h('section', { class: 'card' }, h('h3', null, 'Needs attention'), h('ul', { class: 'att' }, att.map(([k, text, href]) => h('li', null, h('a', { href, class: 'att-' + k, 'data-testid': 'att-item' }, h('span', { class: 'dot ' + k, 'aria-hidden': 'true' }), text))))));
   // trips
   const sec = h('section', { class: 'card' }, h('h3', null, `Active trips (${trips.length})`));
   if (!trips.length) sec.append(h('p', { class: 'muted' }, 'No planned or outbound trips.'), btn('New trip', () => go('#dispatch/new'), 'primary'));
-  trips.sort((a, b) => (a.t.dateOut || '9').localeCompare(b.t.dateOut || '9') || (a.t.timeOut || '').localeCompare(b.t.timeOut || '')).slice(0, 12).forEach(({ t, ev }) => {
+  trips.sort((a, b) => (a.t.dateOut || '9').localeCompare(b.t.dateOut || '9') || (a.t.timeOut || '').localeCompare(b.t.timeOut || '')); const SHOW = 12;
+  trips.slice(0, SHOW).forEach(({ t, ev }) => {
     const es = tripEntries(t); const v = ctx.fleetByKey.get((es[0] || {}).vehicle); const d = ctx.rosterById.get((es[0] || {}).driver); const label = es.length > 1 ? `${v ? v.short : 'no vehicle'} +${es.length - 1} more` : v ? v.short : 'no vehicle';
     sec.append(h('button', { class: 'trip-row', type: 'button', onClick: () => openTripEditor(t.id), 'data-testid': 'today-trip' }, h('div', { class: 'tr-top' }, h('b', null, `#${t.no || ''} ${label}`), h('span', { class: 'chip' }, t.status), resultChip(ev.result), overrideMarker(tripOverrides(t)) ? h('span', { class: 'chip override', 'data-testid': 'trip-override' }, overrideMarker(tripOverrides(t))) : null), h('div', { class: 'tr-sub' }, tripTimes(t), ' · ', t.dest || 'no destination'), h('div', { class: 'tr-sub' }, es.length > 1 ? `${es.length} vehicles · ${es.filter((e) => e.driver).length} drivers` : ['Driver: ', nameWithId(d, (es[0] || {}).driver)]), (ev.blockers.length || ev.warnings.length) ? h('div', { class: 'tr-msg ' + (ev.blockers.length ? 'bad' : 'warn') }, tripSummaryMessage(ev)) : null));
   });
+  if (trips.length > SHOW) sec.append(h('a', { class: 'btn small wide', href: '#dispatch', 'data-testid': 'today-more-trips' }, `+${trips.length - SHOW} more - open the Dispatch tab`));
   root.append(sec);
   if (st.chalkPlan.chalks.length) {
     const sum = chalkSummary(st, ctx); const cs = h('section', { class: 'card', 'data-testid': 'today-chalks' }, h('h3', null, `Chalks (${sum.chalks.length})`));

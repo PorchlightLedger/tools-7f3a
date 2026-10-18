@@ -5,6 +5,7 @@ import { todayISO, stampForFile } from '../util.js';
 import { buildDispatchWorkbook, dispatchEmailText } from '../dispatchxlsx.js';
 import { shareOrDownload, mailtoLink } from '../backup.js';
 import { btn } from '../ui.js';
+import { recordBackup } from '../banners.js';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 export function openExportSheet({ tripId = '' } = {}) {
@@ -30,7 +31,7 @@ export function openExportSheet({ tripId = '' } = {}) {
         try {
           const { bytes, trips, now } = make(); const name = `dispatch-log-${stampForFile(now)}.xlsx`; const txt = dispatchEmailText(st, { now, count: trips.length });
           const r = await shareOrDownload(bytes, name, XLSX_MIME, { title: txt.subject, text: txt.body });
-          clear(msg);
+          clear(msg); if (r.method !== 'cancelled') recordBackup(); // an export that completed counts as a backup
           if (r.method === 'share') { toast('Shared.'); api.close(); }
           else if (r.method === 'download') {
             msg.append(h('div', { class: 'note' }, h('b', null, 'Saved to your Downloads / Files: '), name, h('p', null, 'This browser cannot attach files to the share sheet, so attach that file to the email yourself.'),

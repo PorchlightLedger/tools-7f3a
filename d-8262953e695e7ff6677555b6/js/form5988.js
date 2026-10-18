@@ -2,7 +2,7 @@
 // The 5988-E is an electronically generated (EGA) Army form printed by GCSS-Army (monospaced text blocks: EQUIPMENT DATA /
 // PARTS REQUIRED / MAINTENANCE FAULTS). APD publishes no blank PDF for it, so this layout follows public training
 // material of the printed form. This is a WORKSHEET AID. It does NOT replace the official form / GCSS-Army record.
-import { PdfDoc, jpegSize } from './pdf.js';
+import { PdfDoc, jpegSize, pdfSafe } from './pdf.js';
 import { fmtDate, parseDateLoose, todayISO, MONTHS, uid, pad, sortFaults } from './util.js';
 import { vehIds } from './rules.js';
 import { tmPubs } from './tmdata.js';
@@ -45,11 +45,42 @@ export function newPart() { return { id: uid('p'), fault: '', doc: '', niin: '',
 export function formHasNMC(form) { return form.faults.some((f) => f.symbol === 'X' || f.symbol === 'CX'); }
 export function formDateText(iso) { return fmtDate(iso); }
 function dd(iso) { const d = parseDateLoose(iso); if (!d) return ''; const [y, m, day] = d.split('-'); return `${day}-${MONTHS[+m - 1]}-${y.slice(2)}`; }
+
+// ---- text fitting (PDF) ----
+const FS_NORMAL = 9, FS_MIN = 6, MAX_FIT_LINES = 4;
+/** a value on one line: newlines / tabs become spaces, WinAnsi-safe characters only */
+export const oneLine = (v) => pdfSafe(String(v ?? '').replace(/[\r\n\t\u2028\u2029]+/g, ' '));
+/** fit one value into `w` columns of 9 pt Courier: as is when it fits; else a smaller font (not below FS_MIN) so it still fits one line; else wrapped at FS_MIN
+ *  (at most MAX_FIT_LINES lines, the last one ends in "..." if there is still more). Returns { size, lines }. */
+export function fitText(value, w) {
+  const s = oneLine(value); if (s.length <= w) return { size: FS_NORMAL, lines: [s] };
+  const cap = Math.floor(w * FS_NORMAL / FS_MIN);
+  if (s.length <= cap) return { size: Math.floor((FS_NORMAL * w / s.length) * 100) / 100, lines: [s] };
+  let lines = wrap(s, cap); // (wrap also collapses runs of spaces)
+  if (lines.length > MAX_FIT_LINES) { lines = lines.slice(0, MAX_FIT_LINES); const l = lines[MAX_FIT_LINES - 1]; lines[MAX_FIT_LINES - 1] = l.slice(0, Math.max(0, cap - 3)) + '...'; }
+  return { size: FS_MIN, lines };
+}
+// widths (columns) the PDF gives each field before it has to shrink / wrap, and the widths where text is simply cut off
+const FIT_W = { adminNumber: 35, noun: 35, tm: 51, partNoun: 14 };
+const CUT_W = { model: 24, registration: 30, serial: 30, nsn: 24, lin: 24, change: 10, pubDate: 10, pmcsRef: 90 };
+function lengthWarnings(form) {
+  const w = []; const len = (v) => oneLine(v).length;
+  const fit = (label, v, max) => { const n = len(v); if (n > max) w.push(`${label} is ${n} characters long: the PDF prints it in smaller type${n > Math.floor(max * FS_NORMAL / FS_MIN) ? ' and wraps it' : ''}.`); };
+  const cut = (label, v, max) => { const n = len(v); if (n > max) w.push(`${label} is ${n} characters long: only the first ${max} fit on the PDF.`); };
+  fit('Admin number', form.adminNumber, FIT_W.adminNumber); fit('Equipment noun', form.noun, FIT_W.noun);
+  (form.pubs || []).forEach((p, i) => { fit(`TM ${i + 1} number`, p.tm, FIT_W.tm); cut(`TM ${i + 1} change`, p.change, CUT_W.change); });
+  cut('Model', form.model, CUT_W.model); cut('Registration', form.registration, CUT_W.registration); cut('VIN / serial', form.serial, CUT_W.serial); cut('NSN', form.nsn, CUT_W.nsn);
+  (form.parts || []).forEach((p, i) => fit(`Part ${i + 1} noun`, p.noun, FIT_W.partNoun));
+  for (const f of form.faults || []) if (String(f.desc || '').length > 600) w.push(`Item ${f.item || '?'}: the fault description is ${String(f.desc).length} characters; it prints over several lines (and may continue on the next page).`);
+  if (/[\n\r]/.test([form.adminNumber, form.noun, ...(form.pubs || []).map((p) => p.tm), ...(form.parts || []).map((p) => p.noun)].join(''))) w.push('A one-line field contains a line break; the PDF prints it as a space.');
+  return w;
+}
 export function validateForm(form, { settings = {} } = {}) {
   const w = [];
   if (!formUic(form, settings)) w.push('No UIC (set the Unit UIC in More > Settings, or type one for this form).');
   if (!form.adminNumber) w.push('No vehicle / admin number.');
   if (!form.pubs.some((p) => p.tm)) w.push('No TM publication entered (TM number and date go in the EQUIPMENT DATA block).');
+  w.push(...lengthWarnings(form));
   const seen = new Map();
   for (const f of form.faults) {
     if (!f.desc) w.push(`Item ${f.item || '?'}: no fault description.`);
@@ -127,14 +158,24 @@ export function buildFormPdf(form, { unitName = '', uic = null, now = new Date()
   // EQUIPMENT DATA
   section('EQUIPMENT DATA'); y += LH * 1.2;
   const kv = (col, label, val, w) => T(col, `${label}: ${String(val || '').slice(0, w)}`);
-  kv(0, 'ADMIN NUMBER', form.adminNumber, 22); kv(50, 'VIN / SERIAL NUM', form.serial, 30); y += LH;
+  // a value that may be longer than its column: normal length prints exactly as before; longer is shrunk, then wrapped (extra lines are returned)
+  const TS = (col, str, size) => pdf.text(X0 + col * CW, y, str, { size, font: 'courier' });
+  const kvFit = (col, label, val, w) => {
+    const fit = fitText(val, w); if (fit.size === FS && fit.lines.length === 1) { T(col, `${label}: ${fit.lines[0]}`); return 0; }
+    T(col, `${label}: `); const vc = col + label.length + 2; const y0 = y; fit.lines.forEach((ln, i) => { y = y0 + i * LH; TS(vc, ln, fit.size); }); y = y0; return fit.lines.length - 1;
+  };
+  const row = (extra) => { y += LH * (1 + extra); };
+  let ex = kvFit(0, 'ADMIN NUMBER', form.adminNumber, FIT_W.adminNumber); kv(50, 'VIN / SERIAL NUM', form.serial, 30); row(ex);
   kv(0, 'EQUIP MODEL', form.model, 24); kv(50, 'REGISTRATION', form.registration, 30); y += LH;
-  kv(0, 'EQUIP NOUN', form.noun, 34); kv(50, 'TYPE INSP', form.typeInsp, 4); y += LH;
+  ex = kvFit(0, 'EQUIP NOUN', form.noun, FIT_W.noun); kv(50, 'TYPE INSP', form.typeInsp, 4); row(ex);
   kv(0, 'EQUIP NSN', form.nsn, 24); kv(50, 'CURRENT READING', `${form.readingType || ''} ${form.reading || ''}`.trim(), 30); y += LH;
   kv(0, 'LIN', form.lin, 24); y += LH * 1.6;
   T(34, 'NUMBER', { bold: true }); T(66, 'DATE', { bold: true }); T(78, 'CHANGE NUMBER', { bold: true }); y += LH;
   const pubs = form.pubs.filter((p) => p.tm || p.date || p.change); const pubRows = pubs.length ? pubs : [{ tm: '', date: '', change: '' }];
-  for (const p of pubRows) { T(0, 'PUBLICATION:'); T(14, String(p.tm || '').slice(0, 40)); T(66, String(p.date || '').slice(0, 10)); T(80, String(p.change || '').slice(0, 10)); y += LH; }
+  for (const p of pubRows) {
+    const fit = fitText(p.tm, FIT_W.tm); T(0, 'PUBLICATION:'); TS(14, fit.lines[0], fit.size); T(66, String(p.date || '').slice(0, 10)); T(80, String(p.change || '').slice(0, 10)); y += LH;
+    for (const ln of fit.lines.slice(1)) { TS(14, ln, fit.size); y += LH; }
+  }
   if (form.pmcsRef) { T(0, ('PMCS REF: ' + form.pmcsRef).slice(0, 100)); y += LH; }
   y += LH * 0.6;
   T(0, `INSPECTORS LIC #: ${form.inspLic ? form.inspLic : '________'}  TIME: ${form.inspTime ? form.inspTime : '____'}  SIGNATURE: ${form.inspName ? form.inspName.slice(0, 28) : '______________________'}  TIME: ${form.inspTime2 ? form.inspTime2 : '____'}`); y += LH * 1.8;
@@ -145,8 +186,11 @@ export function buildFormPdf(form, { unitName = '', uic = null, now = new Date()
   T(0, mk([[PC.fault, 'FAULT'], [PC.doc, 'DOC NUM'], [PC.niin, 'NIIN'], [PC.noun, 'NOUN'], [PC.due, 'DUE'], [PC.rec, 'REC'], [PC.st, 'STATUS'], [PC.date, 'DATE'], [PC.comp, 'COMP'], [PC.pri, 'PRI'], [PC.dlc, 'DLC']]), { bold: true }); y += LH;
   if (!form.parts.length) { T(0, '(none entered)'); y += LH; }
   for (const p of form.parts) {
-    T(0, mk([[PC.fault, String(p.fault || '').slice(0, 5)], [PC.doc, String(p.doc || '').slice(0, 13)], [PC.niin, String(p.niin || '').slice(0, 10)], [PC.noun, String(p.noun || '').slice(0, 14)], [PC.due, String(p.qtyDue || '').slice(0, 5)], [PC.rec, String(p.qtyRec || '').slice(0, 5)], [PC.st, String(p.status || '').slice(0, 6)], [PC.date, String(p.date || '').slice(0, 6)], [PC.comp, String(p.comp || '').slice(0, 6)], [PC.pri, String(p.pri || '').slice(0, 3)], [PC.dlc, String(p.dlc || '').slice(0, 3)]]));
-    y += LH;
+    const nf = fitText(p.noun, FIT_W.partNoun); const plain = nf.size === FS && nf.lines.length === 1;
+    if (y + nf.lines.length * LH > 735) { footer(); pdf.addPage(); page++; top(); section('PARTS REQUIRED (continued)'); y += LH * 1.2; }
+    T(0, mk([[PC.fault, String(p.fault || '').slice(0, 5)], [PC.doc, String(p.doc || '').slice(0, 13)], [PC.niin, String(p.niin || '').slice(0, 10)], [PC.noun, plain ? nf.lines[0] : ''], [PC.due, String(p.qtyDue || '').slice(0, 5)], [PC.rec, String(p.qtyRec || '').slice(0, 5)], [PC.st, String(p.status || '').slice(0, 6)], [PC.date, String(p.date || '').slice(0, 6)], [PC.comp, String(p.comp || '').slice(0, 6)], [PC.pri, String(p.pri || '').slice(0, 3)], [PC.dlc, String(p.dlc || '').slice(0, 3)]]));
+    if (!plain) nf.lines.forEach((ln, i) => { const y0 = y; y = y0 + i * LH; TS(PC.noun, ln, nf.size); y = y0; });
+    y += LH * (plain ? 1 : nf.lines.length);
   }
   y += LH * 0.8;
   faultHeader();
@@ -154,12 +198,15 @@ export function buildFormPdf(form, { unitName = '', uic = null, now = new Date()
   if (!form.faults.length) { T(0, '(no faults entered)'); y += LH; }
   const sorted = sortFaults(form.faults);
   for (const f of sorted) {
-    const d = wrap(f.desc, DW), a = wrap(f.action || '', AW); const n = Math.max(d.length, a.length); need(n + 0.4);
+    const d = wrap(oneLine(f.desc), DW), a = wrap(oneLine(f.action || ''), AW); const n = Math.max(d.length, a.length);
+    const PAGE_LINES = Math.floor((735 - 48 - LH * 7) / LH); // lines one page can hold under the repeated headers
+    const split = n > PAGE_LINES; if (!split) need(n + 0.4); else need(3);
     const itemTxt = /^\d+$/.test(String(f.item || '')) ? String(f.item).padStart(4, '0').slice(-4) : String(f.item || '').slice(0, 7);
     T(FC.item, itemTxt); T(FC.date, dd(f.date)); T(FC.st + 2, symbolText(f.symbol), { bold: true });
     if (f.circleItem) pdf.ellipse(X0 + (FC.item + 2) * CW, y - 3.3, 2.5 * CW, 7.2, 0.7); // circled TM item number: fault is in the TM "not ready/available" column
     if (f.symbol === 'CX') pdf.circle(X0 + (FC.st + 2.5) * CW, y - 3, 6.5, 0.9);
     for (let i = 0; i < n; i++) {
+      if (split && i && y + LH > 735) { newPage(); T(FC.item, itemTxt); T(FC.date, '(cont.)'); } // a very long description continues on the next page instead of running off the sheet
       if (d[i]) T(FC.desc, d[i]); if (a[i]) T(FC.act, a[i]);
       if (i === 0) { if (f.hrs) T(FC.hrs, String(f.hrs).slice(0, 5)); if (f.lic) T(FC.lic, String(f.lic).slice(0, 10)); }
       y += LH;

@@ -2,14 +2,21 @@
 const FONTS = { courier: 'F1', courierBold: 'F2', helv: 'F3', helvBold: 'F4' };
 const BASE = { F1: 'Courier', F2: 'Courier-Bold', F3: 'Helvetica', F4: 'Helvetica-Bold' };
 const MAP = { '\u2013': '-', '\u2014': '-', '\u2018': "'", '\u2019': "'", '\u201c': '"', '\u201d': '"', '\u2022': '*', '\u2026': '...', '\u00a0': ' ', '\u2192': '->', '\u2713': 'v', '\u2715': 'x' };
+/** one printable Latin-1 character for `ch`: a typographic mapping, a stripped-accent letter for characters above 255, else '?' (never raw bytes / control characters) */
+function safeChar(ch) {
+  const m = MAP[ch]; if (m !== undefined) return m;
+  const code = ch.codePointAt(0);
+  if (code === 9 || code === 10 || code === 13 || code === 0x0b || code === 0x0c || code === 0x2028 || code === 0x2029 || code === 0x85) return ' '; // a newline inside a one-line field must not print as '?'
+  if (code < 32 || (code >= 127 && code <= 159)) return '?';
+  if (code <= 255) return ch;
+  const base = ch.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // e.g. a letter with a diacritic that WinAnsi lacks -> the plain letter
+  return base.length === 1 && base.charCodeAt(0) >= 32 && base.charCodeAt(0) < 127 ? base : '?';
+}
+/** text safe to print with the standard-14 WinAnsi fonts (used for width estimates too, so wrapping matches what is printed) */
+export function pdfSafe(s) { let o = ''; for (const ch of String(s ?? '')) o += safeChar(ch); return o; }
 function pdfStr(s) {
   let o = '';
-  for (const ch of String(s ?? '')) {
-    let c = MAP[ch] ?? ch; const code = c.charCodeAt(0);
-    if (c.length > 1) { o += c; continue; }
-    if (code < 32 || code > 255) c = '?';
-    if (c === '(' || c === ')' || c === '\\') o += '\\' + c; else o += c;
-  }
+  for (const c of pdfSafe(s)) o += (c === '(' || c === ')' || c === '\\') ? '\\' + c : c;
   return '(' + o + ')';
 }
 const f2 = (n) => (Math.round(n * 100) / 100).toString();

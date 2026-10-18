@@ -6,7 +6,7 @@ import { vthumb, photoSection } from '../photoui.js';
 import { reconcilePhotos } from '../photos.js';
 import { pickDate } from '../pickers.js';
 import { tmBlock, tmFor } from './tmedit.js';
-import { parseGcssRows, parseGcssText, mergeGcss, findGcssHeader } from '../gcss.js';
+import { parseGcssRows, parseGcssText, mergeGcss, findGcssHeader, applyGcssMerge } from '../gcss.js';
 import { parseDelimited } from '../csv.js';
 import { readTable } from '../readtable.js';
 import { todayISO, fmtDate, parseDateLoose, daysBetween, uid, clean } from '../util.js';
@@ -28,8 +28,8 @@ export function renderFleet(root, rest, top) {
     clear(list); const needle = query.trim().toLowerCase();
     const items = st.fleet.map((v) => ({ v, vw: vehicleView(v, ctx) })).filter(({ v, vw }) => {
       if (vw.status === 'TURNED IN') return filter === 'TURNED IN';
-      if (filter === 'NMC') { if (!isNMC(vw.status)) return false; } else if (filter === 'usable') { if (!(vehicleUsable(vw) && !vehicleConflicts(v.key, { id: 'p', status: 'Planned', dateOut: ctx.asOf }, ctx.trips).length)) return false; }
-      else if (filter === 'OUT') { if (!vehicleConflicts(v.key, { id: 'p', status: 'Planned', dateOut: ctx.asOf }, ctx.trips).length) return false; }
+      if (filter === 'NMC') { if (!isNMC(vw.status)) return false; } else if (filter === 'usable') { if (!(vehicleUsable(vw) && !vehicleConflicts(v.key, { id: 'p', status: 'Planned', dateOut: ctx.asOf }, ctx.trips, ctx.asOf).length)) return false; }
+      else if (filter === 'OUT') { if (!vehicleConflicts(v.key, { id: 'p', status: 'Planned', dateOut: ctx.asOf }, ctx.trips, ctx.asOf).length) return false; }
       else if (filter === 'TRL') { if (vw.cls !== 'Towed') return false; } else if (filter === 'FLAG') { if (!vw.flags.length && vw.cls !== 'Unmapped') return false; }
       else if (filter === 'UNKNOWN') { if (vw.status !== 'UNKNOWN' && vw.status !== 'NO STATUS') return false; } else if (filter !== 'all' && vw.status !== filter) return false;
       if (platoonFilter !== 'all' && vw.platoon !== platoonFilter) return false;
@@ -37,7 +37,7 @@ export function renderFleet(root, rest, top) {
     }).sort((a, b) => a.v.key.localeCompare(b.v.key, 'en', { numeric: true }));
     list.append(h('p', { class: 'muted', 'data-testid': 'vehicle-shown' }, `${items.length} shown`));
     for (const { v, vw } of items) {
-      const busy = vehicleConflicts(v.key, { id: 'p', status: 'Planned', dateOut: ctx.asOf }, ctx.trips).length > 0;
+      const busy = vehicleConflicts(v.key, { id: 'p', status: 'Planned', dateOut: ctx.asOf }, ctx.trips, ctx.asOf).length > 0;
       const th = vthumb(v);
       list.append(h('button', { type: 'button', class: 'vrow' + (th ? ' has-thumb' : ''), 'data-testid': 'vehicle-row', 'data-key': v.key, onClick: () => openVehicle(v.key) }, th,
         h('div', { class: 'vr-main' }, h('b', null, v.short), h('small', null, `${vw.type}${v.model ? ' · ' + v.model : ''}`), h('small', { class: 'muted', 'data-testid': 'vehicle-ids' }, idLine(v) || 'no LIN / VIN on file'), v.location || v.funcLoc ? h('small', { class: 'muted' }, v.location || v.funcLoc) : null,
@@ -101,7 +101,7 @@ export function openVehicle(key) {
 }
 
 export function openImport() {
-  const st = S(); let parsed = null, fileName = '', exportDate = todayISO();
+  const st = S(); let parsed = null, fileName = '', exportDate = todayISO(); let dateHint = null, dateInput = null;
   openSheet({ title: 'Import GCSS-Army fleet export', tall: true, build: (b, api) => {
     const out = h('div', { 'data-testid': 'import-out' });
     const ta = h('textarea', { rows: 5, placeholder: 'Or paste the exported list here (include the header row)…', 'aria-label': 'Paste GCSS export text', 'data-testid': 'import-paste' });
@@ -122,6 +122,8 @@ export function openImport() {
       if (parsed.issues.unrecognizedStatus.length) warn.push(`Unrecognized status text: ${parsed.issues.unrecognizedStatus.slice(0, 8).join('; ')}`);
       if (parsed.issues.blankStatus.length) warn.push(`Blank status: ${parsed.issues.blankStatus.slice(0, 8).join(', ')}`);
       if (report.missing.length) warn.push(`In the app but not in this export (status → NO STATUS): ${report.missing.slice(0, 10).join(', ')}`);
+      if (report.partial) warn.push(`PARTIAL EXPORT? ${report.absentCount} of the ${report.existingCount} vehicles already in the app (${Math.round(100 * report.absentCount / report.existingCount)}%) are not in this file. Applying will confirm this first.`);
+      if (report.keyChanges.length) warn.push(`Renumbered (matched by equipment number, trips / chalks / worksheets follow): ${report.keyChanges.slice(0, 8).map((k) => `${k.oldShort} → ${k.short}`).join('; ')}${report.keyChanges.length > 8 ? '…' : ''}`);
       if (parsed.issues.missingColumns.length) warn.push(`Columns not found: ${parsed.issues.missingColumns.join(', ')}`);
       if (report.statusChanges.length && st.fleet.length) warn.push('Changed: ' + report.statusChanges.slice(0, 12).join('; ') + (report.statusChanges.length > 12 ? '…' : ''));
       if (warn.length) out.append(h('div', { class: 'card warn' }, warn.map((w) => h('p', null, w))));
@@ -129,25 +131,34 @@ export function openImport() {
       if (cu && cu.uic !== st.settings.unitUic) out.append(h('div', { class: 'card', 'data-testid': 'import-uic' }, h('p', null, `The export has a UIC column. Most common value: ${cu.uic} (${cu.count} of ${cu.total} rows${cu.distinct > 1 ? `, ${cu.distinct} different UICs` : ''}).`),
         h('button', { class: 'btn small', type: 'button', 'data-testid': 'import-use-uic', onClick: () => { st.settings.unitUic = cu.uic; commit({ render: false }); toast(`Unit UIC set to ${cu.uic}`); showPreview(); } }, `Use ${cu.uic} as Unit UIC (5988-E)`)));
       else if (cu) out.append(h('p', { class: 'hint', 'data-testid': 'import-uic' }, `UIC column matches the Unit UIC (${cu.uic}).`));
-      out.append(h('button', { class: 'btn primary wide', type: 'button', 'data-testid': 'import-apply', onClick: () => {
-        const r = mergeGcss(st.fleet, parsed, st.settings, { exportDate }); st.fleet = r.fleet; st.gcss = { exportDate: parseDateLoose(exportDate) || todayISO(), importedAt: new Date().toISOString(), fileName, rows: parsed.vehicles.length };
-        reconcilePhotos(st.fleet).then(() => commit()); commit(); api.close(); toast(`Imported ${parsed.vehicles.length} vehicles`);
+      out.append(h('button', { class: 'btn primary wide', type: 'button', 'data-testid': 'import-apply', onClick: async () => {
+        const r = mergeGcss(st.fleet, parsed, st.settings, { exportDate }); const rp = r.report;
+        // (c) most of the fleet missing = probably the wrong / a partial file: never apply that silently
+        if (rp.partial && !(await confirmBox({ title: 'Most of your fleet is missing from this file', danger: true, okText: `Apply anyway (${rp.absentCount} vehicles lose their status)`, cancelText: 'Go back',
+          message: `${rp.absentCount} of the ${rp.existingCount} vehicles already in the app (${Math.round(100 * rp.absentCount / rp.existingCount)}%) are not in this export. Applying sets them to NO STATUS (NO-GO) until a complete export is imported.\n\nIs this the complete export from GCSS-Army?` }))) return;
+        // (b) one safety copy of the current data, so a bad import can be undone (Settings > Restore previous data)
+        const snap = await store.takeSnapshot('before a GCSS import');
+        if (!snap.ok && !(await confirmBox({ title: 'No safety copy', danger: true, okText: 'Apply anyway', message: `Could not save a safety copy of the current data (${snap.error}). Apply the import anyway? It cannot be undone.` }))) return;
+        applyGcssMerge(st, r, { exportDate, fileName, rows: parsed.vehicles.length }); // (a) also remaps trips / chalk plan / worksheets of renumbered vehicles
+        reconcilePhotos(st.fleet).then(() => commit()); commit(); api.close(); toast(`Imported ${parsed.vehicles.length} vehicles${rp.keyChanges.length ? `, ${rp.keyChanges.length} renumbered` : ''}${snap.ok ? '. Undo: Settings > Restore previous data' : ''}`);
       } }, st.fleet.length ? 'Apply (update statuses, keep notes & locations)' : 'Apply import'));
     };
     const fail = (e) => { parsed = null; clear(out); out.append(h('div', { class: 'card bad', role: 'alert', 'data-testid': 'import-error' }, e.message || String(e))); };
-    const readText = (text, name) => { try { fileName = name || 'pasted text'; parsed = parseGcssText(text, st.settings); showPreview(); } catch (e) { fail(e); } };
+    // the export date defaults to the file's own date (when it was saved), not to today: an old file must not look fresh
+    const fileDate = (f) => { const t = f && f.lastModified; const d = t && Number.isFinite(t) && t > 0 && t <= Date.now() + 86400000 ? todayISO(new Date(t)) : ''; if (!d || !dateInput) return; exportDate = d; dateInput.value = d; dateInput.classList.add('from-file'); dateHint.textContent = `Taken from the file date (${fmtDate(d)}): change it if wrong. Used for data age and NMC-since on newly NMC vehicles.`; dateHint.className = 'hint warn'; };
+    const readText = (text, name, f) => { try { fileName = name || 'pasted text'; parsed = parseGcssText(text, st.settings); if (f) fileDate(f); showPreview(); } catch (e) { fail(e); } };
     file.addEventListener('change', async () => {
       const f = file.files[0]; if (!f) return;
       try {
         const t = await readTable(await readFileBytes(f));
-        if (t.kind === 'text') { readText(t.text, f.name); return; }
+        if (t.kind === 'text') { readText(t.text, f.name, f); return; }
         const sh = t.sheets.find((x) => findGcssHeader(x.rows)); if (!sh) throw new Error('No sheet in that file has an "Admin No." / "Operational Status" header row. Check it is the GCSS-Army equipment list, or save it as CSV and try again.');
-        fileName = f.name; parsed = parseGcssRows(sh.rows, st.settings); showPreview();
+        fileName = f.name; parsed = parseGcssRows(sh.rows, st.settings); fileDate(f); showPreview();
       } catch (e) { fail(e); }
     });
-    const dt = h('input', { type: 'date', value: exportDate, 'data-testid': 'import-date', onChange: (e) => { exportDate = e.target.value; if (parsed) showPreview(); } });
+    const dt = dateInput = h('input', { type: 'date', value: exportDate, 'data-testid': 'import-date', onChange: (e) => { exportDate = e.target.value; dt.classList.remove('from-file'); dateHint.textContent = 'Date set by you. Used for data age and NMC-since on newly NMC vehicles.'; dateHint.className = 'hint'; if (parsed) showPreview(); } }); dateHint = h('small', { class: 'hint', 'data-testid': 'import-date-hint' }, 'Defaults to today. Choosing a file fills in the file date; pasted text has no date, so set it if the export is older. Used for data age and NMC-since on newly NMC vehicles.');
     b.append(h('p', { class: 'hint' }, 'Columns used: Admin No., Material Description, Model number, Operational Status (FMC / NMCM / NMCS), Equipment, Serial Number, Functional Location, Remark. Re-importing a newer export updates GCSS fields and keeps your notes, locations and NMC-since dates.'),
-      field('Export file (.xls, .xlsx, .csv, .txt)', file), field('GCSS export date', dt, 'Used for data age and NMC-since on newly NMC vehicles'), ta,
+      field('Export file (.xls, .xlsx, .csv, .txt)', file), (() => { const f = field('GCSS export date', dt); f.append(dateHint); return f; })(), ta,
       h('button', { class: 'btn wide', type: 'button', 'data-testid': 'import-read', onClick: () => { if (!ta.value.trim()) { fail(new Error('Paste the text first, or choose a file.')); return; } readText(ta.value, 'pasted text'); } }, 'Read pasted text'), out);
   } });
 }

@@ -29,7 +29,7 @@ export function toast(msg, kind = '') {
 
 const stack = [];
 /** open a bottom sheet. build(body, api) fills it. returns api {close, el, body} */
-export function openSheet({ title, tall = false, build, footer, onClose, labelFor }) {
+export function openSheet({ title, tall = false, build, footer, onClose, labelFor, beforeClose }) {
   const opener = document.activeElement;
   const overlay = h('div', { class: 'overlay' });
   const closeBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Close', onClick: () => api.close() }, '✕');
@@ -41,7 +41,13 @@ export function openSheet({ title, tall = false, build, footer, onClose, labelFo
   const api = {
     el, body, foot, titleEl, closed: false,
     setTitle: (t) => { titleEl.textContent = t; },
-    close(result) { if (api.closed) return; api.closed = true; wrap.remove(); const i = stack.indexOf(api); if (i >= 0) stack.splice(i, 1); if (!stack.length) document.body.classList.remove('noscroll'); try { opener && opener.focus && opener.focus(); } catch { /* */ } onClose && onClose(result); },
+    /** close the sheet. beforeClose() (optional) may return false / a Promise<boolean> to keep it open, e.g. to ask about unsaved edits */
+    close(result) {
+      if (api.closed) return;
+      if (beforeClose) { const r = beforeClose(); if (r === false) return; if (r && typeof r.then === 'function') { r.then((ok) => { if (ok) api.closeNow(result); }); return; } }
+      api.closeNow(result);
+    },
+    closeNow(result) { if (api.closed) return; api.closed = true; wrap.remove(); const i = stack.indexOf(api); if (i >= 0) stack.splice(i, 1); if (!stack.length) document.body.classList.remove('noscroll'); try { opener && opener.focus && opener.focus(); } catch { /* */ } onClose && onClose(result); },
   };
   overlay.addEventListener('click', () => api.close());
   el.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); api.close(); } });
@@ -51,7 +57,7 @@ export function openSheet({ title, tall = false, build, footer, onClose, labelFo
   setTimeout(() => { const f = el.querySelector('[autofocus]') || el; f.focus({ preventScroll: true }); }, 30);
   return api;
 }
-export const closeAllSheets = () => [...stack].reverse().forEach((s) => s.close());
+export const closeAllSheets = () => [...stack].reverse().forEach((s) => s.closeNow());
 export const sheetDepth = () => stack.length;
 
 export function confirmBox({ title = 'Confirm', message = '', okText = 'OK', cancelText = 'Cancel', danger = false, html = null }) {

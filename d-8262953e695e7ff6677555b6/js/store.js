@@ -22,7 +22,7 @@ export function emptyState() {
   return {
     schema: SCHEMA, settings: defaultSettings(), roster: [], fleet: [], trips: [], chalkSeq: 0,
     gcss: { exportDate: '', importedAt: '', fileName: '', rows: 0 }, rosterMeta: { importedAt: '' },
-    presets: STARTER_PRESETS.map((p) => ({ ...p })), tmByType: {}, tmByModel: {}, chalkPlan: { chalks: [], assign: {} }, forms: [], ui: { dismissedPii: false, lastLocations: [] },
+    presets: STARTER_PRESETS.map((p) => ({ ...p })), tmByType: {}, tmByModel: {}, chalkPlan: { chalks: [], assign: {} }, forms: [], ui: { dismissedPii: false, lastLocations: [], lastBackupAt: '' },
   };
 }
 /** fill in anything missing (older backups / partial files) without losing data */
@@ -65,8 +65,11 @@ function idbOpen() {
 const idbGet = (db, k) => new Promise((res, rej) => { const q = db.transaction(KV).objectStore(KV).get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
 const idbSet = (db, k, v) => new Promise((res, rej) => { const t = db.transaction(KV, 'readwrite'); t.objectStore(KV).put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); });
 
+const SNAP_KEY = 'snapshot', LS_SNAP = 'dispatch-app:snapshot';
+/** counts shown for a stored safety copy */
+export const stateCounts = (st) => ({ roster: (st.roster || []).length, fleet: (st.fleet || []).length, trips: (st.trips || []).length, forms: (st.forms || []).length });
 export class Store {
-  constructor() { this.state = emptyState(); this.db = null; this.mode = 'memory'; this.listeners = new Set(); this._t = null; this._dirty = false; this._saving = Promise.resolve(); this.lastError = ''; this.loaded = false; }
+  constructor() { this.state = emptyState(); this.db = null; this.mode = 'memory'; this.listeners = new Set(); this.statusListeners = new Set(); this._t = null; this._dirty = false; this._saving = Promise.resolve(); this.lastError = ''; this.loaded = false; this.snapshotMeta = null; this._memSnap = null; }
   async load() {
     try { this.db = await idbOpen(); this.mode = 'indexeddb'; const v = await idbGet(this.db, KEY); if (v) { this.state = normalizeState(v); this.loaded = true; } }
     catch (e) {
@@ -74,9 +77,14 @@ export class Store {
       try { const t = localStorage.getItem(LS_KEY); if (t) { this.state = normalizeState(JSON.parse(t)); this.loaded = true; } } catch (e2) { this.mode = 'memory'; this.lastError = String(e2); }
     }
     try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch { /* ignore */ }
+    try { const sn = await this._readSnapshot(); this.snapshotMeta = sn ? { at: sn.at, reason: sn.reason, counts: stateCounts(sn.state || {}) } : null; } catch { this.snapshotMeta = null; }
+    this._status();
     return this.state;
   }
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
+  /** fn() runs when the save status changes (a save failed / recovered) */
+  onStatus(fn) { this.statusListeners.add(fn); return () => this.statusListeners.delete(fn); }
+  _status() { this.statusListeners.forEach((f) => { try { f(this); } catch (e) { console.error(e); } }); }
   /** call after mutating this.state */
   commit({ render = true } = {}) {
     this._dirty = true; clearTimeout(this._t); this._t = setTimeout(() => this.flush(), 150);
@@ -86,22 +94,49 @@ export class Store {
     clearTimeout(this._t); if (!this._dirty) return this._saving; this._dirty = false;
     const snapshot = JSON.parse(JSON.stringify(this.state));
     this._saving = this._saving.then(async () => {
+      const had = this.lastError;
       try {
         if (this.mode === 'indexeddb') await idbSet(this.db, KEY, snapshot);
         else if (this.mode === 'localstorage') localStorage.setItem(LS_KEY, JSON.stringify(snapshot));
-      } catch (e) { this.lastError = String(e); console.error('save failed', e); }
+        if (this.mode !== 'memory') this.lastError = '';
+      } catch (e) { this.lastError = String(e && e.message ? e.message : e) || 'save failed'; this._dirty = true; console.error('save failed', e); }
+      if (had !== this.lastError) this._status();
     });
     return this._saving;
   }
+  /** try to save again right now (the banner's Retry button). Resolves true when the state is stored. */
+  async retrySave() { this._dirty = true; await this.flush(); return !this.lastError; }
   replace(state) { this.state = normalizeState(state); this.commit(); return this.flush(); }
+  // ----- one "previous data" slot: a copy of the state taken before a GCSS import is applied or a backup is restored -----
+  async _readSnapshot() {
+    if (this.mode === 'indexeddb') return (await idbGet(this.db, SNAP_KEY)) || null;
+    if (this.mode === 'localstorage') { try { const t = localStorage.getItem(LS_SNAP); return t ? JSON.parse(t) : null; } catch { return null; } }
+    return this._memSnap;
+  }
+  /** store a copy of the CURRENT state (replaces the previous copy). Resolves {ok, error}; never throws. Flushes pending edits first so the copy is current. */
+  async takeSnapshot(reason = '') {
+    try {
+      await this.flush(); const rec = { at: new Date().toISOString(), reason: String(reason || ''), schema: SCHEMA, state: JSON.parse(JSON.stringify(this.state)) };
+      if (this.mode === 'indexeddb') await idbSet(this.db, SNAP_KEY, rec); else if (this.mode === 'localstorage') localStorage.setItem(LS_SNAP, JSON.stringify(rec)); else this._memSnap = rec;
+      this.snapshotMeta = { at: rec.at, reason: rec.reason, counts: stateCounts(rec.state) }; return { ok: true, error: '' };
+    } catch (e) { return { ok: false, error: String(e && e.message ? e.message : e) || 'storage error' }; }
+  }
+  /** put the stored previous data back. The current data becomes the new "previous data" (so this can be undone). Resolves {ok, error, at}. */
+  async restoreSnapshot() {
+    try {
+      const sn = await this._readSnapshot(); if (!sn || !sn.state) return { ok: false, error: 'There is no previous data saved.' };
+      const restored = normalizeState(sn.state); const t = await this.takeSnapshot('before restoring previous data'); if (!t.ok) return { ok: false, error: 'Could not keep a copy of the current data first: ' + t.error };
+      this.state = restored; this.commit(); await this.flush(); return { ok: true, error: '', at: sn.at };
+    } catch (e) { return { ok: false, error: String(e && e.message ? e.message : e) }; }
+  }
   async wipe() {
     clearTimeout(this._t); this._dirty = false; await this._saving.catch(() => {});
     try { if (this.db) { this.db.close(); this.db = null; } } catch { /* */ }
     await new Promise((res) => { try { const r = indexedDB.deleteDatabase(DB); r.onsuccess = r.onerror = r.onblocked = () => res(); } catch { res(); } });
-    try { localStorage.removeItem(LS_KEY); localStorage.clear(); } catch { /* */ }
+    try { localStorage.removeItem(LS_KEY); localStorage.removeItem(LS_SNAP); localStorage.clear(); } catch { /* */ }
     try { sessionStorage.clear(); } catch { /* */ }
-    this.state = emptyState();
+    this.state = emptyState(); this.snapshotMeta = null; this._memSnap = null; this.lastError = '';
     try { this.db = await idbOpen(); this.mode = 'indexeddb'; } catch { this.mode = 'localstorage'; }
-    this.listeners.forEach((f) => f(this.state));
+    this.listeners.forEach((f) => f(this.state)); this._status();
   }
 }

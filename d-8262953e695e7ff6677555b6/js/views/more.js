@@ -1,10 +1,14 @@
 import { S, store, commit, go, APP_VERSION, getCtx } from '../ctx.js';
+import { asOfBar, backupLine, exportBackupNow } from '../banners.js';
+import { updateThenReload, asOfNotice } from '../status.js';
+import { stateCounts } from '../store.js';
+import { stampText } from './override.js';
 import { h, openSheet, toast, field, segmented, toggle, confirmBox, typedConfirm, clear, readFileText, closeAllSheets } from '../dom.js';
 import { DEFAULT_MODEL_MAP, DEFAULT_PERSON_STATUSES, isXBumper, normBumper, platoonText, parsePlatoonText, platoonByRules, platoonRuleErrors, shortBumper } from '../rules.js';
 import { exportSettings, parseSettingsJson, applySettings, applyModelPhotos, settingsFileName } from '../settingsio.js';
 import { photoTotals, faultPhotoTotals, fmtBytes, clearAllPhotos, dropPhotoDb, reconcilePhotos, pruneFaultPhotos } from '../photos.js';
 import { openTmTable } from './tmedit.js';
-import { makeBackup, parseBackup, backupFileName, shareOrDownload } from '../backup.js';
+import { makeBackup, parseBackupInfo, backupFileName, shareOrDownload } from '../backup.js';
 import { openExportSheet } from './exporter.js';
 import { renderWalk } from './walk.js';
 import { renderForms, openPresetEditor } from './form.js';
@@ -19,7 +23,7 @@ export function renderMore(root, rest, top) {
   if (rest[0] === 'settings') { setTimeout(() => { history.replaceState(null, '', '#more'); openSettings(); }, 0); }
   if (rest[0] === 'backup') { setTimeout(() => { history.replaceState(null, '', '#more'); openBackup(); }, 0); }
   const item = (title, sub, onClick, testid) => h('button', { type: 'button', class: 'menu-item', onClick, 'data-testid': testid }, h('span', null, h('b', null, title), h('small', null, sub)), h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'));
-  root.append(piiNote(),
+  root.append(asOfBar(), piiNote(), backupLine(),
     h('div', { class: 'menu' },
       item('Walk-around (motor pool)', 'Tap a vehicle: status, fault notes, location, NMC-since', () => go('#more/walk'), 'menu-walk'),
       item('Chalk planner', 'Number the chalks, tap vehicles onto them, see crews and warnings', () => go('#more/chalk'), 'menu-chalk'),
@@ -27,14 +31,16 @@ export function renderMore(root, rest, top) {
       item('Share dispatch spreadsheet', 'Build the .xlsx on this phone and send it', () => openExportSheet(), 'menu-export'),
       item('Settings', 'Email recipient, rules, type map, lists', () => openSettings(), 'menu-settings'),
       item('Backup, restore & wipe', 'JSON backup via share sheet; wipe all data', () => openBackup(), 'menu-backup'),
-      item('About, privacy & help', `Version ${APP_VERSION} · works offline`, () => openHelp(), 'menu-help')));
+      item('About, privacy & help', `Version ${APP_VERSION} · works offline`, () => openHelp(), 'menu-help')),
+    h('p', { class: 'hint', 'data-testid': 'more-privacy' }, PRIVACY_NOTE));
   return 'More';
 }
 
+export const PRIVACY_NOTE = 'Backups and spreadsheets contain names and license dates. Share them only through approved channels and delete them after use. The phone passcode is what protects this app.';
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 export function openSettings() {
-  const st = S(); const s = st.settings;
-  openSheet({ title: 'Settings', tall: true, build: (b, api) => {
+  const st = S(); const s = st.settings; let listsDirty = () => false;
+  openSheet({ title: 'Settings', tall: true, beforeClose: () => (listsDirty() ? confirmBox({ title: 'Discard unsaved list edits?', message: 'You changed the lists / type map but did not tap "Save lists". Closing now throws those edits away. (Switches and numbers above are already saved.)', okText: 'Discard edits', cancelText: 'Keep editing', danger: true }) : true), build: (b, api) => {
     const num = (label, key, hint) => field(label, h('input', { type: 'number', inputmode: 'numeric', min: '0', value: String(s[key]), 'data-testid': 's-' + key, onChange: (e) => { s[key] = Math.max(0, parseInt(e.target.value, 10) || 0); commit({ render: false }); } }), hint);
     const sel = (label, key, opts, hint) => field(label, segmented(opts.map((o) => [o, o]), s[key], (v) => { s[key] = v; commit({ render: false }); }, { label }), hint);
     b.append(h('h3', null, 'Email'),
@@ -54,10 +60,12 @@ export function openSettings() {
     const plt = ta('Platoons, one per line', s.platoons.join('\n'), 4, '', 's-platoons');
     const xq = ta('Extra qualifications (not tied to a vehicle type), one per line', s.extraQuals.join('\n'), 2, '', 's-extraquals');
     const map = ta('Type map: GCSS Model number | Type name | Qualification (exact name or NONE) | Vehicle / Towed / Mounted', s.modelMap.map((m) => `${m.model} | ${m.type} | ${m.qual} | ${m.cls}`).join('\n'), 12, 'Every GCSS model must be listed. A blank qualification or an unlisted model makes that vehicle NO-GO (fail closed).', 's-typemap');
+    { const lists = [turned, pref, stat, plt, xq, map]; const init = lists.map((x) => x.t.value); listsDirty = () => lists.some((x, i) => x.t.value !== init[i]) || prules.t.value !== prulesInit; }
     b.append(h('h3', null, 'Lists'), turned.el, pref.el, stat.el, plt.el, xq.el, h('h3', null, 'Type map'), map.el,
       h('div', { class: 'row' }, btn('Reset type map to defaults', async () => { if (await confirmBox({ title: 'Reset type map?', message: 'Replaces your edits with the built-in list.', okText: 'Reset', danger: true })) { map.t.value = DEFAULT_MODEL_MAP.map((m) => `${m.model} | ${m.type} | ${m.qual} | ${m.cls}`).join('\n'); } }), btn('Edit 5988-E fault presets', () => openPresetEditor())));
     const xToggle = toggle('Exclude X (permanent NMC) vehicles from platoons', s.platoonExcludeX !== false, (v) => { s.platoonExcludeX = v; commit({ render: false }); upd(); }, 'On (default): a bumper ending in digit + X (A-362X) shows platoon "—", is not counted in platoon chips / filters, and stays in the fleet list and dispatch log. A platoon you set by hand on the vehicle still wins.');
     const prules = ta('Platoon rules for vehicles: Platoon name | pattern (first match wins, one per line)', platoonText(s.platoonRules), 6, 'Patterns: num<100, num 100-199, 1000-1999 (number in the bumper) · re:regex · or a wildcard like A-1##* (* any text, # one digit). Blank = no platoons.', 's-platoonRules');
+    const prulesInit = prules.t.value;
     const ptest = h('input', { type: 'text', placeholder: 'try a bumper, e.g. A-103X', autocomplete: 'off', autocapitalize: 'characters', 'data-testid': 's-platoon-test', 'aria-label': 'Test a bumper against the platoon rules' }); const pout = h('p', { class: 'hint', 'data-testid': 's-platoon-result' }, '');
     const upd = () => { const tmp = { platoonRules: parsePlatoonText(prules.t.value) }; const errs = platoonRuleErrors(tmp); const v = ptest.value.trim(); pout.textContent = (errs.length ? 'Rule problem: ' + errs.join('; ') + '. ' : '') + (v ? (s.platoonExcludeX !== false && isXBumper(v, s.prefixes, s.unitUic) ? `${shortBumper(v, s.prefixes, s.unitUic)} → — (X vehicle, excluded from platoons)` : `${shortBumper(v, s.prefixes, s.unitUic)} → ${platoonByRules(shortBumper(v, s.prefixes, s.unitUic), tmp) || '(no platoon)'}`) : ''); };
     prules.t.addEventListener('input', upd); ptest.addEventListener('input', upd);
@@ -65,13 +73,21 @@ export function openSettings() {
     { const tot = h('p', { class: 'hint', 'data-testid': 's-photo-total' }); const upP = () => { const t = photoTotals(), ft = faultPhotoTotals(); const fl = ft.count ? `${ft.count} fault photo${ft.count === 1 ? '' : 's'} (5988-E worksheets) · ${fmtBytes(ft.bytes)}` : ''; tot.textContent = t.count ? `${t.count} photo${t.count === 1 ? '' : 's'} (${t.vehicle} vehicle, ${t.model} model) · ${fmtBytes(t.bytes)} stored on this device${fl ? '. Also ' + fl : ''}` : fl ? fl + ' stored on this device' : 'No photos stored.'; }; upP();
       b.append(h('h3', null, 'Photos'), tot, h('p', { class: 'hint' }, 'One photo per vehicle / trailer, and one per model, stored only on this device (not in backups or the spreadsheet). The Fleet detail page sets them. Fault photos (up to 3 per fault) are added on the 5988-E worksheet and are also device-only.'),
         h('div', { class: 'row' }, btn('Delete all photos', async () => { if (!photoTotals().count && !faultPhotoTotals().count) { toast('No photos to delete.'); return; } if (await confirmBox({ title: 'Delete all photos?', message: 'Removes every vehicle, model and 5988-E fault photo from this phone. Fleet data and worksheets are not touched.', okText: 'Delete photos', danger: true })) { await clearAllPhotos(); upP(); commit(); toast('All photos deleted'); } }, 'danger small', { 'data-testid': 's-photos-delete' }))); }
+    // the single "previous data" slot (a safety copy taken before a GCSS import is applied / a backup is restored)
+    { const sm = store.snapshotMeta; const c = sm ? sm.counts : null;
+      b.append(h('h3', null, 'Restore previous data'), h('p', { class: 'hint', 'data-testid': 's-prev-info' }, sm ? `Saved ${stampText(sm.at)}${sm.reason ? ' (' + sm.reason + ')' : ''}: ${c.roster} people, ${c.fleet} vehicles, ${c.trips} trips, ${c.forms} worksheets.` : 'None yet. A safety copy of your data is saved automatically before a GCSS import is applied or a backup is restored. It keeps one copy and is replaced each time.'),
+        h('div', { class: 'row' }, btn('Restore previous data…', async () => {
+          if (!(await confirmBox({ title: 'Restore previous data?', message: `This replaces everything now in the app with the copy saved ${stampText(sm.at)} (${c.roster} people, ${c.fleet} vehicles, ${c.trips} trips). Your current data becomes the new "previous data", so you can switch back. Photos are not part of this copy.`, okText: 'Restore previous data', danger: true }))) return;
+          const r = await store.restoreSnapshot(); if (!r.ok) { toast(r.error, 'bad'); return; }
+          await reconcilePhotos(S().fleet); api.closeNow(); toast('Previous data restored'); go('#today');
+        }, 'danger small', { 'data-testid': 's-restore-prev', disabled: !sm }))); }
     // settings file: import / export
     const sfile = h('input', { type: 'file', 'aria-label': 'Choose a settings file (.json)', 'data-testid': 's-import-file' }); const smsg = h('div', { 'data-testid': 's-import-msg' });
     sfile.addEventListener('change', async () => {
       const f = sfile.files[0]; if (!f) return; clear(smsg);
       try { const parsed = parseSettingsJson(await readFileText(f)); if (parsed.problems.length) throw new Error('Cannot import: ' + parsed.problems.join('; '));
         const keys = Object.keys(parsed.patch); if (parsed.modelPhotos) keys.push(`model photos (${Object.keys(parsed.modelPhotos).length})`); const ok = await confirmBox({ title: 'Import settings?', message: `Settings in this file: ${keys.join(', ') || 'none'}${parsed.ignored.length ? `\nIgnored: ${parsed.ignored.join(', ')}` : ''}\n\nIt replaces those settings here. Your roster, fleet, trips and worksheets are not touched.`, okText: 'Import settings' });
-        if (ok) { const ch = applySettings(st, parsed); const ph = await applyModelPhotos(parsed); commit(); api.close(); toast(`Settings imported (${ch.length} changed${parsed.modelPhotos ? `, ${ph.added} model photo${ph.added === 1 ? '' : 's'} added${ph.kept ? `, ${ph.kept} kept` : ''}` : ''})`); setTimeout(() => openSettings(), 50); }
+        if (ok) { const ch = applySettings(st, parsed); const ph = await applyModelPhotos(parsed); commit(); api.closeNow(); toast(`Settings imported (${ch.length} changed${parsed.modelPhotos ? `, ${ph.added} model photo${ph.added === 1 ? '' : 's'} added${ph.kept ? `, ${ph.kept} kept` : ''}` : ''})`); setTimeout(() => openSettings(), 50); }
       } catch (e) { smsg.append(h('div', { class: 'card bad', role: 'alert', 'data-testid': 's-import-error' }, e.message)); }
       sfile.value = '';
     });
@@ -87,7 +103,7 @@ export function openSettings() {
         if (!sts.length) throw new Error('Keep at least one personnel status.');
         s.modelMap = mm; s.statuses = sts; s.platoons = lines(plt.t.value); s.extraQuals = lines(xq.t.value); s.prefixes = lines(pref.t.value).map((x) => x.replace(/\s+/g, '')); s.turnedIn = lines(turned.t.value);
         { const pr = parsePlatoonText(prules.t.value); const bad = platoonRuleErrors({ platoonRules: pr }); if (bad.length) throw new Error('Platoon rule problem: ' + bad[0]); s.platoonRules = pr; }
-        commit(); api.close(); toast('Settings saved');
+        commit(); api.closeNow(); toast('Settings saved');
       } catch (e) { err.textContent = e.message; toast(e.message, 'bad'); }
     } }, 'Save lists'));
   } });
@@ -96,33 +112,48 @@ export function openSettings() {
 export function openBackup() {
   const st = S();
   openSheet({ title: 'Backup, restore & wipe', tall: true, build: (b, api) => {
-    b.append(piiNote(), h('p', null, `Storage: ${store.mode}. Roster ${st.roster.length}, fleet ${st.fleet.length}, trips ${st.trips.length}, 5988-E worksheets ${st.forms.length}.`));
-    b.append(h('h3', null, 'Export backup'), h('p', { class: 'hint' }, 'A JSON file with everything in the app (includes personal data). Save it to Files / a secure place via the share sheet. Photos (vehicle, model and 5988-E fault photos) are not included.'),
-      h('button', { class: 'btn primary wide', type: 'button', 'data-testid': 'backup-export', onClick: async () => { await store.flush(); const bytes = new TextEncoder().encode(makeBackup(st)); const r = await shareOrDownload(bytes, backupFileName(), 'application/json', { title: 'Dispatch app backup (PII)' }); if (r.method !== 'cancelled') toast(r.method === 'share' ? 'Backup shared' : 'Backup saved to Downloads'); } }, 'Export backup'));
+    b.append(piiNote(), backupLine(), h('p', null, `Storage: ${store.mode}. Roster ${st.roster.length}, fleet ${st.fleet.length}, trips ${st.trips.length}, 5988-E worksheets ${st.forms.length}.`));
+    b.append(h('h3', null, 'Export backup'), h('p', { class: 'hint' }, 'A JSON file with everything in the app (includes personal data). Save it to Files / a secure place via the share sheet. Photos (vehicle, model and 5988-E fault photos) are not included. ' + PRIVACY_NOTE),
+      h('button', { class: 'btn primary wide', type: 'button', 'data-testid': 'backup-export', onClick: () => exportBackupNow() }, 'Export backup'));
     const file = h('input', { type: 'file', accept: '.json,application/json', 'aria-label': 'Choose backup file', 'data-testid': 'backup-file' }); const msg = h('div', { 'data-testid': 'backup-msg' });
     file.addEventListener('change', async () => {
       const f = file.files[0]; if (!f) return; clear(msg);
-      try { const state = parseBackup(await readFileText(f));
-        const ok = await confirmBox({ title: 'Restore this backup?', message: `It contains ${state.roster.length} people, ${state.fleet.length} vehicles, ${state.trips.length} trips. This REPLACES everything now in the app.${faultPhotoTotals().count ? ' Fault photos of 5988-E worksheets that are not in the backup will be deleted.' : ''}`, okText: 'Restore (replace all)', danger: true });
-        if (ok) { await store.replace(state); await reconcilePhotos(state.fleet); await pruneFaultPhotos(state.forms); closeAllSheets(); toast('Backup restored'); }
+      try { const info = parseBackupInfo(await readFileText(f)); const state = info.state; const cur = S();
+        const made = info.exportedAt ? `${stampText(info.exportedAt)} (${Math.max(0, Math.round((Date.now() - new Date(info.exportedAt).getTime()) / 86400000))} days ago)` : 'unknown date (an old backup file)';
+        const asOf = asOfNotice(state.settings); const stale = state.settings.asOfOverride;
+        const ok = await confirmBox({ title: 'Restore this backup?', danger: true, okText: 'Restore (replace all)', message: `Backup made: ${made}.\nIt contains ${state.roster.length} people, ${state.fleet.length} vehicles, ${state.trips.length} trips.\nNow in the app: ${cur.roster.length} people, ${cur.fleet.length} vehicles, ${cur.trips.length} trips.\n\nThis REPLACES everything now in the app. A safety copy of the current data is saved first; Settings > Restore previous data brings it back.${stale ? `\nThe backup had an as-of date override (${stale}); it is cleared so the app uses today's date.` : ''}${faultPhotoTotals().count ? '\nFault photos of 5988-E worksheets that are not in the backup will be deleted.' : ''}` });
+        if (ok) {
+          const snap = await store.takeSnapshot('before restoring a backup');
+          if (!snap.ok && !(await confirmBox({ title: 'No safety copy', message: `Could not save a safety copy of the current data (${snap.error}). Restore anyway? The current data cannot be brought back.`, okText: 'Restore anyway', danger: true }))) return;
+          state.settings.asOfOverride = ''; if (info.exportedAt) state.ui.lastBackupAt = info.exportedAt; // this data IS that backup
+          await store.replace(state); await reconcilePhotos(state.fleet); await pruneFaultPhotos(state.forms); closeAllSheets(); toast(stale ? 'Backup restored (as-of date override cleared)' : 'Backup restored');
+        }
       } catch (e) { msg.append(h('div', { class: 'card bad', role: 'alert', 'data-testid': 'backup-error' }, e.message)); }
       file.value = '';
     });
     b.append(h('h3', null, 'Import backup'), field('Backup file (.json)', file), msg);
     b.append(h('h3', null, 'Wipe all data'), h('p', { class: 'hint' }, 'Deletes the roster, fleet, trips, forms, photos and settings from this phone. The app itself stays installed. Make a backup first if you may need the data.'),
-      h('button', { class: 'btn danger wide', type: 'button', 'data-testid': 'wipe', onClick: async () => { if (await typedConfirm({ title: 'Wipe ALL data?', message: 'This permanently deletes everything stored by this app on this device. It cannot be undone.', word: 'WIPE', okText: 'Wipe everything' })) { await dropPhotoDb(); await store.wipe(); closeAllSheets(); go('#today'); toast('All data wiped'); } } }, 'Wipe all data…'));
+      h('button', { class: 'btn danger wide', type: 'button', 'data-testid': 'wipe', onClick: async () => { if (await typedConfirm({ title: 'Wipe ALL data?', message: 'This permanently deletes everything stored by this app on this device (including the saved previous data). It cannot be undone.', word: 'WIPE', okText: 'Wipe everything' })) { await dropPhotoDb(); await store.wipe(); closeAllSheets(); go('#today'); toast('All data wiped'); } } }, 'Wipe all data…'));
     api.foot.append(h('button', { class: 'btn', type: 'button', onClick: () => api.close() }, 'Close'));
   } });
 }
 
+/** the running build id and the offline cache the service worker holds ("dispatch-<hash>"); they differ while an update waits for a reload */
+async function cacheName() { try { if (typeof caches === 'undefined') return ''; const k = (await caches.keys()).filter((x) => x.startsWith('dispatch-')); return k.length ? k.map((x) => x.slice(9)).join(', ') : ''; } catch { return ''; } }
 export function openHelp() {
   openSheet({ title: 'About, privacy & help', tall: true, build: (b, api) => {
+    const ver = h('p', { 'data-testid': 'help-version' }, `Build ${APP_VERSION}. Storage: ${store.mode}.`);
+    cacheName().then((c) => { if (c) ver.textContent = `Build ${APP_VERSION} · offline copy ${c}${c !== APP_VERSION && APP_VERSION !== 'dev' ? ' - a different version is installed: tap Check for update / reload' : ''}. Storage: ${store.mode}.`; });
     b.append(h('div', { class: 'help' },
-      h('h3', null, 'Privacy'), h('ul', null, h('li', null, 'No server, no accounts, no analytics, no outside network calls. Everything is stored on this phone (IndexedDB).'), h('li', null, 'The app ships with no unit data. The roster and fleet are imported by you.'), h('li', null, 'The roster holds personal data. DODID, SSN and DOB are never stored (those columns are dropped on import). Treat the phone, backups and spreadsheets as PII / possibly CUI.'), h('li', null, 'Wipe all data: More > Backup, restore & wipe.')),
-      h('h3', null, 'Rules (same as the spreadsheet system)'), h('ul', null, h('li', null, 'GCSS-Army is the source of truth for FMC / NMCM / NMCS. A local walk-around status is flagged and cleared when GCSS agrees.'), h('li', null, 'A bumper ending in digit + X (A-362X) is a permanent NMC (NMC-X): never dispatchable.'), h('li', null, 'Turned-in vehicles are off the books and excluded from counts (Settings > Turned-in bumpers).'), h('li', null, 'GO / WARN / NO-GO: vehicle must be FMC, not X / turned in, not already on a trip. Driver must be Active, license valid on the trip date, qualified for the vehicle type, not already on a trip. A driver without a GCSS-Army ID is a WARN.'), h('li', null, 'Unknown models and blank qualification rules fail closed (NO-GO).')),
+      h('h3', null, 'Privacy'), h('ul', null, h('li', null, 'No server, no accounts, no analytics, no outside network calls. Everything is stored on this phone (IndexedDB).'), h('li', null, 'The app ships with no unit data. The roster and fleet are imported by you.'), h('li', null, 'The roster holds personal data. DODID, SSN and DOB are never stored (those columns are dropped on import). Treat the phone, backups and spreadsheets as PII / possibly CUI.'),
+        h('li', { 'data-testid': 'help-privacy-backups' }, PRIVACY_NOTE), h('li', null, 'Wipe all data (also deletes the previous-data copy): More > Backup, restore & wipe.')),
+      h('h3', null, 'Rules (same as the spreadsheet system)'), h('ul', null, h('li', null, 'GCSS-Army is the source of truth for FMC / NMCM / NMCS. A local walk-around status is flagged and cleared when GCSS agrees.'), h('li', null, 'A bumper ending in digit + X (A-362X) is a permanent NMC (NMC-X): never dispatchable.'), h('li', null, 'Turned-in vehicles are off the books and excluded from counts (Settings > Turned-in bumpers).'), h('li', null, 'GO / WARN / NO-GO: vehicle must be FMC, not X / turned in, not already on a trip. Driver must be Active, license valid on the trip date, qualified for the vehicle type, not already on a trip. A driver without a GCSS-Army ID is a WARN. A license that runs out before a multi-day trip ends is a WARN.'), h('li', null, 'Towed items follow the same status rules (NMCM / NMCS / X / turned in / GCSS not dispatchable = NO-GO); a model missing from the Type map is a WARN.'), h('li', null, 'Unknown models and blank qualification rules fail closed (NO-GO).'),
+        h('li', null, 'Busy: a vehicle or person is busy from the date out through the date back. Trips on different days do not collide; trips that share a day do (times are used when both have them). An Out trip is busy until it is set Back, and shows "Not back: past due" after its return date.'),
+        h('li', { 'data-testid': 'help-override-rules' }, 'Commander override records an approval for a NO-GO vehicle, this crew and these reasons (change the driver, TC, passengers or trailers and it no longer covers). It can NOT waive an expired / missing driver license, an X (deadlined) or turned-in vehicle, or a data error: a commander cannot waive a license requirement or dispatch a deadlined or turned-in vehicle.')),
       h('h3', null, 'Install on iPhone'), h('p', null, 'Safari > Share > Add to Home Screen. After the first load it works offline.'),
-      h('h3', null, 'Version'), h('p', null, `Dispatch ${APP_VERSION}. Storage: ${store.mode}.`),
-      h('div', { class: 'row' }, btn('Check for update / reload', async () => { try { const r = await navigator.serviceWorker.getRegistration(); if (r) await r.update(); } catch { /* offline */ } location.reload(); }, '', { 'data-testid': 'reload' }))));
+      h('p', { 'data-testid': 'help-install-first' }, h('b', null, 'Install to the Home Screen first, then import. '), 'Data you enter in a Safari tab does not carry into the installed app: they are separate storage. Open the installed app and import (or restore a backup) there.'),
+      h('h3', null, 'Version'), ver,
+      h('div', { class: 'row' }, btn('Check for update / reload', async () => { await updateThenReload({ getReg: async () => (navigator.serviceWorker ? navigator.serviceWorker.getRegistration() : null), controllerChange: (cb) => { const sw = navigator.serviceWorker; if (!sw) return () => {}; sw.addEventListener('controllerchange', cb); return () => sw.removeEventListener('controllerchange', cb); }, reload: () => location.reload(), timeoutMs: 4000 }); }, '', { 'data-testid': 'reload' }))));
     api.foot.append(h('button', { class: 'btn', type: 'button', onClick: () => api.close() }, 'Close'));
   } });
 }

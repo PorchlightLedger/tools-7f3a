@@ -48,8 +48,9 @@ function cellXml(ref, cell) {
   const sTop = sa || ` s="${ST.wrap}"`; // numbers / booleans: top-aligned like the text cells beside them
   if (typeof v === 'number' && isFinite(v) && type !== 'text') return `<c r="${ref}"${sTop}><v>${v}</v></c>`;
   if (typeof v === 'boolean') return `<c r="${ref}"${sTop} t="b"><v>${v ? 1 : 0}</v></c>`;
-  let str = String(v);
-  if (/^[=+@]/.test(str)) str = "'" + str; // never let imported text turn into a formula
+  // an inline-string cell (t="inlineStr") is always text to Excel/Numbers/Sheets - never a formula - so no apostrophe prefix here
+  // (it would show as a literal ' in the cell). toCSV in csv.js keeps its prefix because a CSV cell has no type.
+  const str = String(v);
   return `<c r="${ref}"${sa} t="inlineStr"><is><t xml:space="preserve">${esc(str)}</t></is></c>`;
 }
 /** wrap estimate: number of lines `text` needs in a column `width` characters wide (greedy word wrap, honours newlines) */

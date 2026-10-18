@@ -37,7 +37,11 @@ export function parseRosterRows(rows, settings, { existing = [] } = {}) {
     const vals = rows.slice(hi + 1).map((r) => clean(r[j])).filter(Boolean);
     if (vals.length && vals.every((v) => truthyMark(v))) { qualCols.push({ j, qual: name }); newQuals.push(name); } else ignored.push(name);
   });
-  const people = []; const issues = { rows: 0, noId: 0, dupIds: [], badLicense: [], generatedIds: 0, unknownStatus: [] };
+  const people = []; const issues = { rows: 0, noId: 0, dupIds: [], badLicense: [], generatedIds: 0, unknownStatus: [], matchedByName: 0, ambiguous: [] };
+  // rows without an ID are matched to people already in the app by normalized last + first name (rank only breaks a tie), so importing the same
+  // file twice - or a file with no ID column - updates people instead of adding a second copy (and trips keep pointing at the right person)
+  const nameKey = (l, f) => normKeyText(l) + '|' + normKeyText(f); const byName = new Map();
+  for (const p of existing) { const k = nameKey(p.last, p.first); if (!byName.has(k)) byName.set(k, []); byName.get(k).push(p); }
   const ids = new Set(existing.map((p) => p.id)); let seq = 0;
   const nextId = () => { let id; do { seq++; id = 'P' + String(seq).padStart(3, '0'); } while (ids.has(id)); return id; };
   const get = (r, f) => (f in map ? clean(r[map[f]]) : '');
@@ -48,7 +52,12 @@ export function parseRosterRows(rows, settings, { existing = [] } = {}) {
     if (!last && 'fullname' in map) { const fn = get(r, 'fullname'); if (fn.includes(',')) { [last, first] = fn.split(',').map((x) => x.trim()); } else { const parts = fn.split(/\s+/); last = parts.pop() || ''; first = parts.join(' '); } }
     if (!last && !first && !get(r, 'id')) continue; issues.rows++;
     let id = get(r, 'id');
-    if (!id) { issues.noId++; id = nextId(); issues.generatedIds++; ids.add(id); }
+    if (!id) {
+      issues.noId++; let m = (last || first) ? byName.get(nameKey(last, first)) || [] : [];
+      if (m.length > 1) { const rk = normKeyText(get(r, 'rank')); if (rk) { const f = m.filter((p) => normKeyText(p.rank) === rk); if (f.length) m = f; } }
+      if (m.length > 1) { issues.ambiguous.push(`${last}${first ? ', ' + first : ''}`); continue; } // two people with that name: do not guess
+      if (m.length === 1) { id = m[0].id; issues.matchedByName++; } else { id = nextId(); issues.generatedIds++; ids.add(id); }
+    }
     if (batch.has(id.toUpperCase())) { issues.dupIds.push(id); continue; } batch.add(id.toUpperCase());
     const lic = get(r, 'licExp'); let licExp = '', licExpRaw = '';
     if (lic) { const d = parseDateLoose(lic); if (d) licExp = d; else { licExpRaw = lic; issues.badLicense.push(id); } }
@@ -58,7 +67,7 @@ export function parseRosterRows(rows, settings, { existing = [] } = {}) {
     if (p.status && !settings.statuses.some((s) => normKeyText(s.name) === normKeyText(p.status))) issues.unknownStatus.push(`${id}: ${p.status}`);
     people.push(p);
   }
-  if (!people.length) throw new Error('Header found but no people rows below it.');
+  if (!people.length && !issues.ambiguous.length) throw new Error('Header found but no people rows below it.');
   return { people, issues, newQuals, dropped, ignored, hasGcssCol: 'gcssId' in map, hasFlagCols: FLAG_FIELDS.filter((f) => f in map), hasQualCols: qualCols.length > 0, hasLicCol: 'licExp' in map, hasStatusCol: 'status' in map };
 }
 export const parseRosterText = (text, settings, o) => parseRosterRows(parseDelimited(text), settings, o);

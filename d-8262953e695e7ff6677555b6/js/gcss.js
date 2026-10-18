@@ -67,6 +67,8 @@ export function commonUic(vehicles) {
 }
 export function parseGcssText(text, settings) { return parseGcssRows(parseDelimited(text), settings); }
 
+/** more than this share of the existing fleet missing from an import needs an explicit confirmation (likely a partial export) */
+export const PARTIAL_EXPORT_RATIO = 0.10;
 /**
  * Merge a parsed export into the existing fleet. GCSS fields are replaced; user fields (notes, location, nmcSince, override) are kept.
  * returns {fleet, report}
@@ -74,13 +76,14 @@ export function parseGcssText(text, settings) { return parseGcssRows(parseDelimi
 export function mergeGcss(existing, parsed, settings, { exportDate = '', now = new Date() } = {}) {
   const today = todayISO(now); const stamp = parseDateLoose(exportDate) || today;
   const byKey = new Map(existing.map((v) => [v.key, v])); const byAsset = new Map(existing.filter((v) => v.asset).map((v) => [v.asset, v]));
-  const used = new Set(); const out = []; const rep = { commonUic: commonUic(parsed.vehicles), total: parsed.vehicles.length, added: [], updated: 0, unchanged: 0, statusChanges: [], missing: [], overridesDiffer: [], overridesResolved: [], xVehicles: [], xButFmc: [], turnedInStill: [], unmapped: [], notDispatchable: 0, issues: parsed.issues };
+  const used = new Set(); const out = []; const rep = { commonUic: commonUic(parsed.vehicles), total: parsed.vehicles.length, keyChanges: [], absentCount: 0, existingCount: 0, partial: false, added: [], updated: 0, unchanged: 0, statusChanges: [], missing: [], overridesDiffer: [], overridesResolved: [], xVehicles: [], xButFmc: [], turnedInStill: [], unmapped: [], notDispatchable: 0, issues: parsed.issues };
   const lookup = modelLookup(settings); const tk = turnedInKeys(settings);
   for (const nv of parsed.vehicles) {
     let old = byKey.get(nv.key) || (nv.asset && byAsset.get(nv.asset)) || null; if (old && used.has(old.key)) old = null;
     let rec;
     if (old) {
       used.add(old.key);
+      if (old.key !== nv.key) rep.keyChanges.push({ from: old.key, to: nv.key, vid: old.vid || '', oldShort: old.short || old.bumper || old.key, short: nv.short }); // renumbered bumper (matched by equipment number): references must follow
       const prevStatus = vehicleStatus(old, settings).status;
       rec = { ...old, ...nv, key: nv.key, vid: old.vid || uid('v'), notes: old.notes || '', location: old.location || '', nmcSince: old.nmcSince || '', override: old.override || null, walkAt: old.walkAt || '', inExport: true, lastImport: stamp };
       for (const k of USER_FIELDS) if (old[k] !== undefined) rec[k] = old[k]; // manual VIN / LIN / platoon / TM edits survive a re-import
@@ -106,6 +109,9 @@ export function mergeGcss(existing, parsed, settings, { exportDate = '', now = n
     out.push(rec);
   }
   for (const v of existing) if (!used.has(v.key)) { out.push({ ...v, inExport: false, gcss: '' }); if (!tk.has(v.key) && !v.manual) rep.missing.push(v.short || v.bumper); }
+  // a partial export (wrong filter, one unit only ...) would flip a large share of the fleet to NO STATUS: report how much of the existing fleet is absent
+  rep.existingCount = existing.filter((v) => !tk.has(v.key) && !v.manual).length; rep.absentCount = rep.missing.length;
+  rep.partial = rep.existingCount > 0 && rep.absentCount > PARTIAL_EXPORT_RATIO * rep.existingCount;
   for (const v of out) {
     const s = vehicleStatus(v, settings);
     if (s.status === 'NMC-X') { rep.xVehicles.push(v.short); if (s.flags.some((f) => f.startsWith('X VEHICLE BUT'))) rep.xButFmc.push(v.short); }
@@ -116,4 +122,25 @@ export function mergeGcss(existing, parsed, settings, { exportDate = '', now = n
   out.sort((a, b) => a.key.localeCompare(b.key, 'en', { numeric: true }));
   rep.exportDate = stamp; rep.unmappedModels = [...new Set(out.filter((v) => !modelInfo(v.model, lookup).mapped).map((v) => v.model || '(blank)'))];
   return { fleet: out, report: rep };
+}
+
+/** After mergeGcss changed some bumper keys (same vehicle / equipment number, new bumper), make every stored reference follow the vehicle:
+ *  trip entries (vehicle, towed), a commander override's vehicle / towed, the chalk plan assignment, 5988-E worksheets (vehicleKey). References are
+ *  found by the OLD key; vehicle ids (vid) never change. `changes` = report.keyChanges. Returns how many references were changed. */
+export function remapFleetKeys(st, changes) {
+  const map = new Map((changes || []).filter((c) => c && c.from && c.to && c.from !== c.to).map((c) => [c.from, c.to])); const n = { trips: 0, chalk: 0, forms: 0 }; if (!map.size) return n;
+  const m = (k) => (typeof k === 'string' && map.has(k) ? map.get(k) : k);
+  for (const t of st.trips || []) for (const e of Array.isArray(t.entries) ? t.entries : []) {
+    if (map.has(e.vehicle)) { e.vehicle = m(e.vehicle); n.trips++; }
+    if (Array.isArray(e.towed) && e.towed.some((k) => map.has(k))) { e.towed = e.towed.map(m); n.trips++; }
+    const o = e.override; if (o) { if (map.has(o.vehicle)) o.vehicle = m(o.vehicle); if (Array.isArray(o.towed) && o.towed.some((k) => map.has(k))) o.towed = o.towed.map(m); }
+  }
+  const cp = st.chalkPlan; if (cp && cp.assign) { const next = {}; for (const [k, v] of Object.entries(cp.assign)) { if (map.has(k)) n.chalk++; next[m(k)] = v; } cp.assign = next; }
+  for (const f of st.forms || []) if (map.has(f.vehicleKey)) { f.vehicleKey = m(f.vehicleKey); n.forms++; }
+  return n;
+}
+/** Apply a mergeGcss() result to the state: new fleet + export info, and every key reference remapped. */
+export function applyGcssMerge(st, result, { exportDate = '', fileName = '', rows = 0, now = new Date() } = {}) {
+  const remap = remapFleetKeys(st, result.report.keyChanges); st.fleet = result.fleet;
+  st.gcss = { exportDate: parseDateLoose(exportDate) || todayISO(now), importedAt: now.toISOString(), fileName, rows }; return remap;
 }
