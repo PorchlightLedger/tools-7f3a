@@ -192,7 +192,7 @@ export function migrateTrip(t) {
     const legacy = tripEntries(t)[0]; t.entries = (legacy.vehicle || legacy.driver || legacy.tc || legacy.pax.length || legacy.towed.length) ? [{ ...legacy, id: uid('e'), pax: [...legacy.pax], towed: [...legacy.towed] }] : [];
     for (const k of ['vehicle', 'vid', 'driver', 'tc', 'pax', 'towed', 'pmcs']) delete t[k];
   }
-  for (const e of t.entries) { if (!e.id) e.id = uid('e'); if (!Array.isArray(e.pax)) e.pax = []; if (!Array.isArray(e.towed)) e.towed = []; for (const k of ['vehicle', 'vid', 'driver', 'tc']) if (typeof e[k] !== 'string') e[k] = ''; e.pmcs = e.pmcs === true; }
+  for (const e of t.entries) { if (!e.id) e.id = uid('e'); if (!Array.isArray(e.pax)) e.pax = []; if (!Array.isArray(e.towed)) e.towed = []; for (const k of ['vehicle', 'vid', 'driver', 'tc']) if (typeof e[k] !== 'string') e[k] = ''; e.pmcs = e.pmcs === true; cleanOverride(e); }
   if (!t.id) t.id = uid('t'); t.sv = 2; return t;
 }
 export function tripPeople(t) { return tripEntries(t).flatMap((e) => [['Driver', e.driver], ['TC / A-driver', e.tc], ...(e.pax || []).map((p, i) => [`Pax ${i + 1}`, p])]).filter(([, id]) => id); }
@@ -364,9 +364,71 @@ export function evaluateTrip(trip, ctx) {
   if (trip.dateOut && trip.dateBack && trip.dateBack < trip.dateOut) W('DATE_BACK', 'DATE BACK IS BEFORE DATE OUT');
   else if (trip.dateOut && trip.dateBack && trip.dateBack === trip.dateOut && trip.timeOut && trip.timeBack && trip.timeBack < trip.timeOut) W('TIME_BACK', 'TIME BACK IS BEFORE TIME OUT');
   res.nogoEntries = res.entries.filter((r) => r.result === 'NO-GO');
+  // commander override: the result stays an honest NO-GO; blocksOut says whether anything still stops the trip from going Out.
+  res.entries.forEach((r) => { r.override = overrideStatus(r.entry, r); });
+  res.overrides = res.entries.filter((r) => r.override).map((r) => ({ entry: r.entry, ...r.override }));
+  res.overriddenEntries = res.nogoEntries.filter((r) => r.override && r.override.covers);
+  res.blockingEntries = res.nogoEntries.filter((r) => !(r.override && r.override.covers));
+  res.blocksOut = res.blockingEntries.length > 0 || res.blockers.some((b) => !b.entry);
   res.result = res.blockers.length ? 'NO-GO' : res.warnings.length ? 'WARN' : 'GO';
   return res;
 }
+// ---------- commander override of NO-GO vehicles ----------
+// entry.override = {by, reason, at (ISO time), vehicle (fleet key it was given for), reasons:[{code, msg}] (the NO-GO reasons that were overridden)}.
+// It RECORDS an approval (a typed name + reason). It is not a login or a lock: anyone holding the phone can type a name.
+// Without a valid override a NO-GO vehicle still blocks Out exactly as before. An override only covers the reasons recorded when it was given:
+// a new NO-GO reason (different driver, another fault ...) is not covered, and changing the vehicle drops it.
+/** reasons that are data errors, not a readiness call a commander can accept (nothing real to dispatch / the same item twice) */
+export const NON_OVERRIDABLE = ['NO_VEHICLE', 'VEH_NOT_FOUND', 'VEH_TWICE', 'TOW_SELF', 'TOW_TWICE', 'TOW_NOT_FOUND', 'PERSON_TWICE', 'STATUS_BAD'];
+export const OVERRIDE_NAME_MAX = 80, OVERRIDE_REASON_MAX = 300;
+const reasonKey = (r) => `${r.code}|${r.raw || r.msg}`;
+const oneLine = (x, max) => String(x == null ? '' : x).replace(/\s+/g, ' ').trim().slice(0, max);
+/** drop a malformed override (odd imports / hand-edited backups) and trim the rest in place */
+export function cleanOverride(e) {
+  const o = e && e.override; if (o === undefined) return e;
+  const ok = o && typeof o === 'object' && !Array.isArray(o) && oneLine(o.by, OVERRIDE_NAME_MAX) && oneLine(o.reason, OVERRIDE_REASON_MAX);
+  if (!ok) { delete e.override; return e; }
+  e.override = { by: oneLine(o.by, OVERRIDE_NAME_MAX), reason: oneLine(o.reason, OVERRIDE_REASON_MAX), at: typeof o.at === 'string' ? o.at : '', vehicle: typeof o.vehicle === 'string' ? o.vehicle : '',
+    reasons: (Array.isArray(o.reasons) ? o.reasons : []).filter((r) => r && typeof r === 'object' && typeof r.code === 'string').map((r) => ({ code: r.code, msg: String(r.msg == null ? '' : r.msg) })) };
+  return e;
+}
+/** state of an entry's override against its current evaluation `er`: null (none) | {override, covers, needed, extra[]}.
+ *  covers: the entry is NO-GO and every current NO-GO reason (and the vehicle) is one the commander accepted. needed: the entry is NO-GO now. */
+export function overrideStatus(entry, er) {
+  const o = entry && entry.override; if (!o || !o.by || !o.reason) return null;
+  const needed = !!er && er.result === 'NO-GO'; const have = new Set((o.reasons || []).map(reasonKey));
+  const extra = needed ? er.blockers.filter((b) => !have.has(reasonKey(b)) || NON_OVERRIDABLE.includes(b.code)) : [];
+  const sameVehicle = !!entry.vehicle && o.vehicle === entry.vehicle;
+  return { override: o, needed, extra, sameVehicle, covers: needed && sameVehicle && !extra.length };
+}
+/** can this entry (evaluated as `er`, ideally on an Out probe so Out-only reasons like PMCS are included) be overridden? -> {ok, reasons[], error} */
+export function canOverrideEntry(er) {
+  if (!er || er.result !== 'NO-GO') return { ok: false, reasons: [], error: 'This vehicle is not NO-GO, so there is nothing to override.' };
+  const bad = er.blockers.filter((b) => NON_OVERRIDABLE.includes(b.code));
+  if (bad.length) return { ok: false, reasons: er.blockers, error: 'This cannot be overridden: ' + (bad[0].raw || bad[0].msg) + '. Fix or remove it.' };
+  return { ok: true, reasons: er.blockers, error: '' };
+}
+/** check the typed name + reason: both required (not blank after trimming) -> {ok, by, reason, error} */
+export function checkOverrideInput({ by, reason } = {}) {
+  const b = oneLine(by, OVERRIDE_NAME_MAX), r = oneLine(reason, OVERRIDE_REASON_MAX);
+  if (!b) return { ok: false, by: b, reason: r, error: "Type the approving commander's name." };
+  if (!r) return { ok: false, by: b, reason: r, error: 'A short reason is required.' };
+  return { ok: true, by: b, reason: r, error: '' };
+}
+/** record an override on `entry` (evaluated as `er`). Returns {ok, override, error}; changes nothing when it fails. */
+export function applyOverride(entry, er, { by, reason, now = new Date() } = {}) {
+  const inp = checkOverrideInput({ by, reason }); if (!inp.ok) return { ok: false, error: inp.error };
+  if (!entry || !er || er.entry !== entry) return { ok: false, error: 'That vehicle entry does not match the checks.' };
+  const can = canOverrideEntry(er); if (!can.ok) return { ok: false, error: can.error };
+  entry.override = { by: inp.by, reason: inp.reason, at: now.toISOString(), vehicle: entry.vehicle, reasons: can.reasons.map((b) => ({ code: b.code, msg: b.raw || b.msg })) };
+  return { ok: true, override: entry.override, error: '' };
+}
+/** undo: remove the override from the entry. Returns true when there was one. */
+export function removeOverride(entry) { if (entry && entry.override) { delete entry.override; return true; } return false; }
+/** every override on a trip, with the vehicle label: [{entry, vehicle, by, reason, at, reasons}] */
+export function tripOverrides(t) { return tripEntries(t).filter((e) => e.override && e.override.by).map((e) => ({ entry: e, vehicle: e.vehicle, ...e.override })); }
+/** "Commander override: NAME" (distinct names, in trip order) or '' */
+export function overrideMarker(list) { const names = [...new Set((list || []).map((o) => o.by).filter(Boolean))]; return names.length ? 'Commander override: ' + names.join(', ') : ''; }
 export function tripSummaryMessage(ev) {
   const list = ev.blockers.length ? ev.blockers : ev.warnings; if (!list.length) return '';
   return list[0].msg + (list.length > 1 ? ` (+${list.length - 1} more)` : '');

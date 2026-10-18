@@ -101,7 +101,7 @@ export function chalkSummary(st, ctx, { platoon = 'all' } = {}) {
           if (+t.chalk && +t.chalk !== c.n) c.warnings.push({ level: 'warn', key: it.v.key, msg: `${nm} is on chalk ${c.n} but its trip #${t.no} is chalk ${t.chalk}` });
         }
       }
-      if (t && e) { const er = evalOf(t).entries.find((r) => r.entry === e); if (er && er.result === 'NO-GO') c.warnings.push({ level: 'bad', key: it.v.key, msg: `${nm}: trip #${t.no} is NO-GO for this vehicle (${er.blockers.length} reason${er.blockers.length === 1 ? '' : 's'})` }); }
+      if (t && e) { const er = evalOf(t).entries.find((r) => r.entry === e); if (er && er.result === 'NO-GO') { const ov = er.override && er.override.covers ? er.override.override : null; c.warnings.push({ level: ov ? 'warn' : 'bad', key: it.v.key, msg: `${nm}: trip #${t.no} is NO-GO for this vehicle (${er.blockers.length} reason${er.blockers.length === 1 ? '' : 's'})${ov ? ` - Commander override: ${ov.by}` : ''}` }); } }
     }
     for (const t of c.trips) { const off = chalkOffers(st, ctx, t); if (off.length) c.warnings.push({ level: 'warn', key: '', msg: `Trip #${t.no} (Planned) is missing ${off.length} chalk vehicle${off.length === 1 ? '' : 's'}: ${off.map((r) => r.v.short).join(', ')} - open the trip to add ${off.length === 1 ? 'it' : 'them'}` }); }
     c.counts.people = people.size;

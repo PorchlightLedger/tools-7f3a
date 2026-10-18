@@ -2,7 +2,7 @@ import { S, store, commit, go, APP_VERSION, getCtx } from '../ctx.js';
 import { h, openSheet, toast, field, segmented, toggle, confirmBox, typedConfirm, clear, readFileText, closeAllSheets } from '../dom.js';
 import { DEFAULT_MODEL_MAP, DEFAULT_PERSON_STATUSES, isXBumper, normBumper, platoonText, parsePlatoonText, platoonByRules, platoonRuleErrors, shortBumper } from '../rules.js';
 import { exportSettings, parseSettingsJson, applySettings, applyModelPhotos, settingsFileName } from '../settingsio.js';
-import { photoTotals, fmtBytes, clearAllPhotos, dropPhotoDb, reconcilePhotos } from '../photos.js';
+import { photoTotals, faultPhotoTotals, fmtBytes, clearAllPhotos, dropPhotoDb, reconcilePhotos, pruneFaultPhotos } from '../photos.js';
 import { openTmTable } from './tmedit.js';
 import { makeBackup, parseBackup, backupFileName, shareOrDownload } from '../backup.js';
 import { openExportSheet } from './exporter.js';
@@ -62,9 +62,9 @@ export function openSettings() {
     const upd = () => { const tmp = { platoonRules: parsePlatoonText(prules.t.value) }; const errs = platoonRuleErrors(tmp); const v = ptest.value.trim(); pout.textContent = (errs.length ? 'Rule problem: ' + errs.join('; ') + '. ' : '') + (v ? (s.platoonExcludeX !== false && isXBumper(v, s.prefixes, s.unitUic) ? `${shortBumper(v, s.prefixes, s.unitUic)} → — (X vehicle, excluded from platoons)` : `${shortBumper(v, s.prefixes, s.unitUic)} → ${platoonByRules(shortBumper(v, s.prefixes, s.unitUic), tmp) || '(no platoon)'}`) : ''); };
     prules.t.addEventListener('input', upd); ptest.addEventListener('input', upd);
     b.append(h('h3', null, 'Platoons (vehicles)'), xToggle, prules.el, field('Test', ptest), pout);
-    { const tot = h('p', { class: 'hint', 'data-testid': 's-photo-total' }); const upP = () => { const t = photoTotals(); tot.textContent = t.count ? `${t.count} photo${t.count === 1 ? '' : 's'} (${t.vehicle} vehicle, ${t.model} model) · ${fmtBytes(t.bytes)} stored on this device` : 'No photos stored.'; }; upP();
-      b.append(h('h3', null, 'Photos'), tot, h('p', { class: 'hint' }, 'One photo per vehicle / trailer, and one per model, stored only on this device (not in backups or the spreadsheet). The Fleet detail page sets them.'),
-        h('div', { class: 'row' }, btn('Delete all photos', async () => { if (!photoTotals().count) { toast('No photos to delete.'); return; } if (await confirmBox({ title: 'Delete all photos?', message: 'Removes every vehicle and model photo from this phone. Fleet data is not touched.', okText: 'Delete photos', danger: true })) { await clearAllPhotos(); upP(); commit(); toast('All photos deleted'); } }, 'danger small', { 'data-testid': 's-photos-delete' }))); }
+    { const tot = h('p', { class: 'hint', 'data-testid': 's-photo-total' }); const upP = () => { const t = photoTotals(), ft = faultPhotoTotals(); const fl = ft.count ? `${ft.count} fault photo${ft.count === 1 ? '' : 's'} (5988-E worksheets) · ${fmtBytes(ft.bytes)}` : ''; tot.textContent = t.count ? `${t.count} photo${t.count === 1 ? '' : 's'} (${t.vehicle} vehicle, ${t.model} model) · ${fmtBytes(t.bytes)} stored on this device${fl ? '. Also ' + fl : ''}` : fl ? fl + ' stored on this device' : 'No photos stored.'; }; upP();
+      b.append(h('h3', null, 'Photos'), tot, h('p', { class: 'hint' }, 'One photo per vehicle / trailer, and one per model, stored only on this device (not in backups or the spreadsheet). The Fleet detail page sets them. Fault photos (up to 3 per fault) are added on the 5988-E worksheet and are also device-only.'),
+        h('div', { class: 'row' }, btn('Delete all photos', async () => { if (!photoTotals().count && !faultPhotoTotals().count) { toast('No photos to delete.'); return; } if (await confirmBox({ title: 'Delete all photos?', message: 'Removes every vehicle, model and 5988-E fault photo from this phone. Fleet data and worksheets are not touched.', okText: 'Delete photos', danger: true })) { await clearAllPhotos(); upP(); commit(); toast('All photos deleted'); } }, 'danger small', { 'data-testid': 's-photos-delete' }))); }
     // settings file: import / export
     const sfile = h('input', { type: 'file', 'aria-label': 'Choose a settings file (.json)', 'data-testid': 's-import-file' }); const smsg = h('div', { 'data-testid': 's-import-msg' });
     sfile.addEventListener('change', async () => {
@@ -97,14 +97,14 @@ export function openBackup() {
   const st = S();
   openSheet({ title: 'Backup, restore & wipe', tall: true, build: (b, api) => {
     b.append(piiNote(), h('p', null, `Storage: ${store.mode}. Roster ${st.roster.length}, fleet ${st.fleet.length}, trips ${st.trips.length}, 5988-E worksheets ${st.forms.length}.`));
-    b.append(h('h3', null, 'Export backup'), h('p', { class: 'hint' }, 'A JSON file with everything in the app (includes personal data). Save it to Files / a secure place via the share sheet.'),
+    b.append(h('h3', null, 'Export backup'), h('p', { class: 'hint' }, 'A JSON file with everything in the app (includes personal data). Save it to Files / a secure place via the share sheet. Photos (vehicle, model and 5988-E fault photos) are not included.'),
       h('button', { class: 'btn primary wide', type: 'button', 'data-testid': 'backup-export', onClick: async () => { await store.flush(); const bytes = new TextEncoder().encode(makeBackup(st)); const r = await shareOrDownload(bytes, backupFileName(), 'application/json', { title: 'Dispatch app backup (PII)' }); if (r.method !== 'cancelled') toast(r.method === 'share' ? 'Backup shared' : 'Backup saved to Downloads'); } }, 'Export backup'));
     const file = h('input', { type: 'file', accept: '.json,application/json', 'aria-label': 'Choose backup file', 'data-testid': 'backup-file' }); const msg = h('div', { 'data-testid': 'backup-msg' });
     file.addEventListener('change', async () => {
       const f = file.files[0]; if (!f) return; clear(msg);
       try { const state = parseBackup(await readFileText(f));
-        const ok = await confirmBox({ title: 'Restore this backup?', message: `It contains ${state.roster.length} people, ${state.fleet.length} vehicles, ${state.trips.length} trips. This REPLACES everything now in the app.`, okText: 'Restore (replace all)', danger: true });
-        if (ok) { await store.replace(state); await reconcilePhotos(state.fleet); closeAllSheets(); toast('Backup restored'); }
+        const ok = await confirmBox({ title: 'Restore this backup?', message: `It contains ${state.roster.length} people, ${state.fleet.length} vehicles, ${state.trips.length} trips. This REPLACES everything now in the app.${faultPhotoTotals().count ? ' Fault photos of 5988-E worksheets that are not in the backup will be deleted.' : ''}`, okText: 'Restore (replace all)', danger: true });
+        if (ok) { await store.replace(state); await reconcilePhotos(state.fleet); await pruneFaultPhotos(state.forms); closeAllSheets(); toast('Backup restored'); }
       } catch (e) { msg.append(h('div', { class: 'card bad', role: 'alert', 'data-testid': 'backup-error' }, e.message)); }
       file.value = '';
     });

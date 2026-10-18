@@ -1,7 +1,7 @@
 // Photo UI pieces: list thumbnails, the single photo slot on the vehicle detail, model photo, full view, share.
-import { h, openSheet, toast, clear } from './dom.js';
+import { h, openSheet, toast, clear, confirmBox } from './dom.js';
 import { shareOrDownload } from './backup.js';
-import { effectivePhoto, photoUrl, photoMeta, hasPhoto, vehicleKeyOf, modelPhotoKey, setVehiclePhoto, setModelPhoto, removePhoto, getPhotoBlob, fmtBytes } from './photos.js';
+import { effectivePhoto, photoUrl, photoMeta, hasPhoto, vehicleKeyOf, modelPhotoKey, setVehiclePhoto, setModelPhoto, removePhoto, getPhotoBlob, fmtBytes, faultPhotoKeys, addFaultPhoto, FAULT_PHOTO_MAX } from './photos.js';
 import { commit } from './ctx.js';
 
 /** small thumbnail element for a fleet record (its own photo, else the model photo); null when there is none */
@@ -54,4 +54,49 @@ export function photoSection(v, redraw) {
     sec.append(m);
   }
   return sec;
+}
+
+// ----- fault photos on the DA 5988-E worksheet (up to FAULT_PHOTO_MAX per fault; device only, never in the backup / xlsx) -----
+export const FAULT_PHOTO_HELP = `Fault photos (up to ${FAULT_PHOTO_MAX} per fault) are stored only on this phone. They are NOT in the JSON backup or the spreadsheet. They go into the PDF only if you tick "Include fault photos page" before making it.`;
+const faultNo = (f) => (/^\d+$/.test(String(f.item || '')) ? String(f.item).padStart(4, '0').slice(-4) : String(f.item || '?'));
+/** view one fault photo full size, with previous / next when the fault has several */
+export function openFaultPhotoViewer(form, fault, startKey) {
+  const keys = faultPhotoKeys(form.id, fault.id); let i = Math.max(0, keys.indexOf(startKey)); if (!keys.length) return;
+  openSheet({ title: `Fault ${faultNo(fault)} photo`, build: (b, api) => {
+    const img = h('img', { class: 'photo-full', alt: '', 'data-testid': 'fault-photo-full' }); const cap = h('p', { class: 'hint', 'data-testid': 'fault-photo-caption' });
+    const prev = h('button', { type: 'button', class: 'btn small', 'data-testid': 'fault-photo-prev', onClick: () => { i = (i + keys.length - 1) % keys.length; show(); } }, '‹ Previous');
+    const next = h('button', { type: 'button', class: 'btn small', 'data-testid': 'fault-photo-next', onClick: () => { i = (i + 1) % keys.length; show(); } }, 'Next ›');
+    const show = () => { img.removeAttribute('src'); img.alt = `Fault ${faultNo(fault)} photo ${i + 1} of ${keys.length}`; cap.textContent = `Fault ${faultNo(fault)}${fault.desc ? ' - ' + fault.desc : ''} (photo ${i + 1} of ${keys.length})`; photoUrl(keys[i], 'full').then((u) => { if (u) img.src = u; }); };
+    b.append(img, cap, keys.length > 1 ? h('div', { class: 'row' }, prev, next) : null); show();
+  } });
+}
+/** the photo strip of one fault line: thumbnails (tap = full size, X = remove) and the Add photo controls. Redraws itself; onChange() tells the worksheet to refresh its PDF option. */
+export function faultPhotoStrip(form, fault, { onChange = () => {} } = {}) {
+  const box = h('div', { class: 'fault-photos', 'data-testid': 'fault-photos', 'data-fault': fault.id }); let busy = false;
+  const lib = h('input', { type: 'file', accept: 'image/*', multiple: true, class: 'visually-hidden', tabindex: '-1', 'aria-hidden': 'true', 'data-testid': 'fault-photo-file' });
+  const cam = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'visually-hidden', tabindex: '-1', 'aria-hidden': 'true', 'data-testid': 'fault-photo-cam' });
+  const add = async (files) => {
+    if (busy || !files.length) return; busy = true; let added = 0, err = '';
+    try { toast('Saving photo…'); for (const f of files) { try { await addFaultPhoto(form.id, fault.id, f); added++; } catch (e) { err = (e && e.message) || 'storage error'; break; } } }
+    finally { busy = false; }
+    if (err) toast((added ? `${added} saved. ` : '') + (/up to/.test(err) ? err : 'Could not use that picture: ' + err), 'bad'); else toast(added === 1 ? 'Photo added' : `${added} photos added`);
+    redraw(); onChange();
+  };
+  for (const inp of [lib, cam]) inp.addEventListener('change', async () => { const fs = [...(inp.files || [])]; inp.value = ''; await add(fs); });
+  const redraw = () => {
+    clear(box); const keys = faultPhotoKeys(form.id, fault.id); const n = keys.length;
+    const row = h('div', { class: 'fp-row' });
+    keys.forEach((k, idx) => {
+      const img = h('img', { class: 'vthumb-img', alt: '', draggable: 'false', 'data-testid': 'fault-photo-img' }); photoUrl(k, 'thumb').then((u) => { if (u) img.src = u; }).catch(() => {});
+      row.append(h('span', { class: 'fphoto', 'data-testid': 'fault-photo', 'data-key': k },
+        h('button', { type: 'button', class: 'fphoto-open', 'data-testid': 'fault-photo-open', 'aria-label': `View photo ${idx + 1} of fault ${faultNo(fault)} full size`, onClick: () => openFaultPhotoViewer(form, fault, k) }, img),
+        h('button', { type: 'button', class: 'fphoto-x', 'data-testid': 'fault-photo-remove', 'aria-label': `Remove photo ${idx + 1} of fault ${faultNo(fault)}`, onClick: async () => {
+          if (!(await confirmBox({ title: 'Remove this photo?', message: `Removes photo ${idx + 1} of fault ${faultNo(fault)} from this phone.`, okText: 'Remove photo', danger: true }))) return;
+          await removePhoto(k); toast('Photo removed'); redraw(); onChange();
+        } }, '✕')));
+    });
+    if (n < FAULT_PHOTO_MAX) row.append(h('button', { type: 'button', class: 'btn small', 'data-testid': 'fault-photo-take', onClick: () => cam.click() }, 'Add photo: camera'), h('button', { type: 'button', class: 'btn small', 'data-testid': 'fault-photo-choose', onClick: () => lib.click() }, 'Add photo: library'));
+    box.append(row, h('small', { class: 'hint', 'data-testid': 'fault-photo-count' }, n ? `${n} of ${FAULT_PHOTO_MAX} photos` : 'No photos'), lib, cam);
+  };
+  redraw(); return box;
 }

@@ -2,7 +2,7 @@
 // The 5988-E is an electronically generated (EGA) Army form printed by GCSS-Army (monospaced text blocks: EQUIPMENT DATA /
 // PARTS REQUIRED / MAINTENANCE FAULTS). APD publishes no blank PDF for it, so this layout follows public training
 // material of the printed form. This is a WORKSHEET AID. It does NOT replace the official form / GCSS-Army record.
-import { PdfDoc } from './pdf.js';
+import { PdfDoc, jpegSize } from './pdf.js';
 import { fmtDate, parseDateLoose, todayISO, MONTHS, uid, pad, sortFaults } from './util.js';
 import { vehIds } from './rules.js';
 import { tmPubs } from './tmdata.js';
@@ -72,7 +72,36 @@ function wrap(text, n) {
 const COLS = 100; // characters per line at 9pt Courier = 540pt
 export const FORM_FOOTER = 'Worksheet aid - not an official form. Verify against the TM and GCSS-Army. Layout follows public descriptions of DA Form 5988-E.';
 
-export function buildFormPdf(form, { unitName = '', uic = null, now = new Date() } = {}) {
+/** fault photo attachment pages. groups = [{fault, images:[Uint8Array JPEG | null]}] in print order. Appended AFTER the unchanged 5988-E page(s); returns the number of photo pages added. */
+function faultPhotoPages(pdf, form, groups, { unitName, uicText, page0, footer }) {
+  const LM = 36, CW = 540, GAP = 12, BW = (CW - 2 * GAP) / 3, BH = 178, TOP = 78, BOTTOM = 745; let page = page0, y = TOP, added = 0;
+  const head = () => {
+    pdf.addPage(); page++; added++;
+    pdf.text(LM, 40, 'DA FORM 5988-E WORKSHEET - FAULT PHOTOS', { font: 'helvBold', size: 12 }); { const dt = `Date: ${fmtDate(form.date) || ''}`; pdf.text(LM + CW - dt.length * 4.4, 40, dt, { font: 'helv', size: 8 }); }
+    pdf.text(LM, 54, [`Admin number: ${form.adminNumber || '-'}`, form.serial ? `VIN / serial: ${form.serial}` : '', unitName ? String(unitName).slice(0, 40) : '', uicText ? `UIC: ${uicText}` : ''].filter(Boolean).join('   '), { font: 'helv', size: 8 });
+    pdf.text(LM, 65, 'Photos attached for reference. The worksheet pages before this are unchanged. Photos stay on the phone unless you share this PDF.', { font: 'helv', size: 7, color: [0.35, 0.35, 0.35] });
+    y = TOP;
+  };
+  for (const g of groups) {
+    const f = g.fault; const imgs = (g.images || []).slice(0, 3); if (!imgs.length) continue;
+    const itemTxt = /^\d+$/.test(String(f.item || '')) ? String(f.item).padStart(4, '0').slice(-4) : String(f.item || '').slice(0, 7);
+    let d = wrap(f.desc || '(no description)', 105); if (d.length > 3) { d = d.slice(0, 3); d[2] = d[2].slice(0, 102) + '...'; }
+    const need = 14 + d.length * 10 + 6 + BH + 22;
+    if (!added || y + need > BOTTOM) { if (added) footer(page); head(); }
+    pdf.text(LM, y + 9, `FAULT ${itemTxt}   STATUS ${symbolText(f.symbol)}   ${fmtDate(f.date) || ''}`, { font: 'helvBold', size: 9 }); y += 14;
+    for (const ln of d) { pdf.text(LM, y + 8, ln, { font: 'helv', size: 8.5 }); y += 10; }
+    y += 6;
+    imgs.forEach((jpeg, i) => {
+      const x = LM + i * (BW + GAP); const dim = jpeg ? jpegSize(jpeg) : null; let ok = false, hh = 40;
+      if (dim) { const sc = Math.min(BW / dim.w, BH / dim.h); const w = dim.w * sc; hh = dim.h * sc; ok = pdf.image(x, y, w, hh, jpeg); if (ok) pdf.rect(x, y, w, hh, { lw: 0.5 }); else hh = 40; }
+      if (!ok) { pdf.rect(x, y, BW, 40, { lw: 0.5 }); pdf.text(x + 6, y + 24, '(photo unavailable)', { font: 'helv', size: 8 }); }
+      pdf.text(x, y + hh + 9, `Fault ${itemTxt} - photo ${i + 1} of ${imgs.length}`, { font: 'helv', size: 7 });
+    });
+    y += BH + 22;
+  }
+  if (added) footer(page); return added;
+}
+export function buildFormPdf(form, { unitName = '', uic = null, now = new Date(), faultPhotos = null } = {}) {
   const uicText = uic === null ? String(form.uic || '').trim() : String(uic || '').trim();
   const FS = 9, CW = FS * 0.6, LH = 11.5, X0 = (612 - COLS * CW) / 2; // centred
   const pdf = new PdfDoc({ title: `DA Form 5988-E worksheet ${form.adminNumber || ''}` });
@@ -144,6 +173,8 @@ export function buildFormPdf(form, { unitName = '', uic = null, now = new Date()
   pdf.text(X0, y, 'Circled TM item number = fault listed in the TM "equipment not ready/available" (NMC) column. Last-name initial = satisfactory / corrected.', { font: 'helv', size: 7 }); y += 8.5;
   pdf.text(X0, y, form.supName ? `MAINTENANCE SUPERVISOR / DESIGNATED REP (circled X / status change): ${form.supName}` : 'MAINTENANCE SUPERVISOR / DESIGNATED REP (circled X / status change): ______________________________', { font: 'helv', size: 7 }); y += 8.5;
   footer();
+  // optional: fault photos on extra page(s) AFTER the unchanged 5988-E page(s)
+  if (faultPhotos && faultPhotos.some((g) => g.images && g.images.some(Boolean))) faultPhotoPages(pdf, form, faultPhotos.map((g) => ({ ...g, images: (g.images || []).filter(Boolean) })), { unitName, uicText, page0: page, footer: (n) => { pdf.text(36, 770, FORM_FOOTER, { font: 'helv', size: 6.5, color: [0.35, 0.35, 0.35] }); pdf.text(540, 770, `Page ${n}`, { font: 'helv', size: 6.5, color: [0.35, 0.35, 0.35] }); } });
   return pdf.save();
 }
 export function formFileName(form) { return `5988-E_worksheet_${String(form.adminNumber || 'vehicle').replace(/[^A-Za-z0-9]+/g, '')}_${(form.date || '').replace(/-/g, '')}.pdf`; }

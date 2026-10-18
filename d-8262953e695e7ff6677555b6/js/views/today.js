@@ -1,6 +1,6 @@
 import { store, S, getCtx, go } from '../ctx.js';
 import { h } from '../dom.js';
-import { tripEntries, fleetCounts, pct, evaluateTrip, gcssIdStats, isActiveTrip, vehicleView, personAvailable, licenseState, asOfDate, tripSummaryMessage, personLabel } from '../rules.js';
+import { tripEntries, fleetCounts, pct, evaluateTrip, gcssIdStats, isActiveTrip, vehicleView, personAvailable, licenseState, asOfDate, tripSummaryMessage, personLabel, tripOverrides, overrideMarker } from '../rules.js';
 import { daysBetween, fmtDate, todayISO, localDayOf } from '../util.js';
 import { statusChip, resultChip, tripTimes, nameWithId, piiNote, emptyCard, btn } from '../ui.js';
 import { openTripEditor } from './dispatch.js';
@@ -20,8 +20,8 @@ export function renderToday(root) {
   // attention
   const att = []; const asOf = ctx.asOf;
   const trips = ctx.trips.filter(isActiveTrip).map((t) => ({ t, ev: evaluateTrip(t, ctx) }));
-  const nogo = trips.filter((x) => x.ev.result === 'NO-GO').length, warn = trips.filter((x) => x.ev.result === 'WARN').length;
-  if (nogo) att.push(['bad', `${nogo} trip${nogo > 1 ? 's' : ''} NO-GO`, '#dispatch']);
+  const nogo = trips.filter((x) => x.ev.result === 'NO-GO').length, nogoOv = trips.filter((x) => x.ev.result === 'NO-GO' && x.ev.overriddenEntries.length).length, warn = trips.filter((x) => x.ev.result === 'WARN').length;
+  if (nogo) att.push(['bad', `${nogo} trip${nogo > 1 ? 's' : ''} NO-GO${nogoOv ? ` (${nogoOv} with commander override)` : ''}`, '#dispatch']);
   if (warn) att.push(['warn', `${warn} trip${warn > 1 ? 's' : ''} with warnings`, '#dispatch']);
   if (st.roster.length) att.push([gi.missing ? 'orange' : 'ok', `Missing GCSS ID: ${gi.missing} of ${gi.active} Active`, '#roster/missing']);
   const act = st.roster.filter((p) => personAvailable(p, st.settings)); const lic = { EXPIRED: 0, MISSING: 0, EXPIRING: 0, INVALID: 0 };
@@ -41,7 +41,7 @@ export function renderToday(root) {
   if (!trips.length) sec.append(h('p', { class: 'muted' }, 'No planned or outbound trips.'), btn('New trip', () => go('#dispatch/new'), 'primary'));
   trips.sort((a, b) => (a.t.dateOut || '9').localeCompare(b.t.dateOut || '9') || (a.t.timeOut || '').localeCompare(b.t.timeOut || '')).slice(0, 12).forEach(({ t, ev }) => {
     const es = tripEntries(t); const v = ctx.fleetByKey.get((es[0] || {}).vehicle); const d = ctx.rosterById.get((es[0] || {}).driver); const label = es.length > 1 ? `${v ? v.short : 'no vehicle'} +${es.length - 1} more` : v ? v.short : 'no vehicle';
-    sec.append(h('button', { class: 'trip-row', type: 'button', onClick: () => openTripEditor(t.id), 'data-testid': 'today-trip' }, h('div', { class: 'tr-top' }, h('b', null, `#${t.no || ''} ${label}`), h('span', { class: 'chip' }, t.status), resultChip(ev.result)), h('div', { class: 'tr-sub' }, tripTimes(t), ' · ', t.dest || 'no destination'), h('div', { class: 'tr-sub' }, es.length > 1 ? `${es.length} vehicles · ${es.filter((e) => e.driver).length} drivers` : ['Driver: ', nameWithId(d, (es[0] || {}).driver)]), (ev.blockers.length || ev.warnings.length) ? h('div', { class: 'tr-msg ' + (ev.blockers.length ? 'bad' : 'warn') }, tripSummaryMessage(ev)) : null));
+    sec.append(h('button', { class: 'trip-row', type: 'button', onClick: () => openTripEditor(t.id), 'data-testid': 'today-trip' }, h('div', { class: 'tr-top' }, h('b', null, `#${t.no || ''} ${label}`), h('span', { class: 'chip' }, t.status), resultChip(ev.result), overrideMarker(tripOverrides(t)) ? h('span', { class: 'chip override', 'data-testid': 'trip-override' }, overrideMarker(tripOverrides(t))) : null), h('div', { class: 'tr-sub' }, tripTimes(t), ' · ', t.dest || 'no destination'), h('div', { class: 'tr-sub' }, es.length > 1 ? `${es.length} vehicles · ${es.filter((e) => e.driver).length} drivers` : ['Driver: ', nameWithId(d, (es[0] || {}).driver)]), (ev.blockers.length || ev.warnings.length) ? h('div', { class: 'tr-msg ' + (ev.blockers.length ? 'bad' : 'warn') }, tripSummaryMessage(ev)) : null));
   });
   root.append(sec);
   if (st.chalkPlan.chalks.length) {

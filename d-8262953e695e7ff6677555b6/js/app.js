@@ -5,7 +5,7 @@ import { renderDispatch } from './views/dispatch.js';
 import { renderFleet } from './views/fleet.js';
 import { renderRoster } from './views/roster.js';
 import { renderMore } from './views/more.js';
-import { loadPhotoIndex, reconcilePhotos, onPhotosChanged } from './photos.js';
+import { loadPhotoIndex, reconcilePhotos, pruneFaultPhotos, onPhotosChanged } from './photos.js';
 
 const ROUTES = { today: ['Today', renderToday], dispatch: ['Dispatch', renderDispatch], fleet: ['Fleet', renderFleet], roster: ['Roster', renderRoster], more: ['More', renderMore] };
 let current = null, scrollMemo = {};
@@ -28,6 +28,7 @@ export function render() {
 async function boot() {
   await store.load();
   await loadPhotoIndex(); reconcilePhotos(store.state.fleet).catch(() => {});
+  if (store.loaded) pruneFaultPhotos(store.state.forms).catch(() => {}); // fault photos of worksheets / faults that no longer exist (only when the saved state really loaded)
   store.subscribe(() => { if (!document.querySelector('.sheet-wrap') || true) renderKeepScroll(); });
   onPhotosChanged(() => renderKeepScroll());
   window.addEventListener('hashchange', () => { closeAllSheets(); render(); });

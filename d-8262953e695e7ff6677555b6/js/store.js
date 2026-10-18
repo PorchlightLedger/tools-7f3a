@@ -51,7 +51,7 @@ export function normalizeState(raw) {
   const vidOf = new Map(s.fleet.map((v) => [v.key, v.vid]));
   for (const t of s.trips) for (const e of t.entries) if (e.vehicle && !e.vid) e.vid = vidOf.get(e.vehicle) || '';
   s.forms = s.forms.filter((f) => f && typeof f === 'object');
-  for (const f of s.forms) { if (!f.id) f.id = uid('f'); if (f.uicOverride === undefined) f.uicOverride = !!String(f.uic || '').trim(); if (!f.vehicleId && f.vehicleKey && vidOf.has(f.vehicleKey)) f.vehicleId = vidOf.get(f.vehicleKey); f.sv = 2; }
+  for (const f of s.forms) { if (!f.id) f.id = uid('f'); if (f.uicOverride === undefined) f.uicOverride = !!String(f.uic || '').trim(); if (!f.vehicleId && f.vehicleKey && vidOf.has(f.vehicleKey)) f.vehicleId = vidOf.get(f.vehicleKey); f.sv = 2; if (!Array.isArray(f.faults)) f.faults = []; f.faults = f.faults.filter((x) => x && typeof x === 'object'); { const seenF = new Set(); for (const x of f.faults) { if (!x.id || seenF.has(x.id)) x.id = uid('x'); seenF.add(x.id); } } } // fault ids key the fault photos (kept on the device only)
   s.schema = SCHEMA; return s;
 }
 
@@ -66,12 +66,12 @@ const idbGet = (db, k) => new Promise((res, rej) => { const q = db.transaction(K
 const idbSet = (db, k, v) => new Promise((res, rej) => { const t = db.transaction(KV, 'readwrite'); t.objectStore(KV).put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); });
 
 export class Store {
-  constructor() { this.state = emptyState(); this.db = null; this.mode = 'memory'; this.listeners = new Set(); this._t = null; this._dirty = false; this._saving = Promise.resolve(); this.lastError = ''; }
+  constructor() { this.state = emptyState(); this.db = null; this.mode = 'memory'; this.listeners = new Set(); this._t = null; this._dirty = false; this._saving = Promise.resolve(); this.lastError = ''; this.loaded = false; }
   async load() {
-    try { this.db = await idbOpen(); this.mode = 'indexeddb'; const v = await idbGet(this.db, KEY); if (v) this.state = normalizeState(v); }
+    try { this.db = await idbOpen(); this.mode = 'indexeddb'; const v = await idbGet(this.db, KEY); if (v) { this.state = normalizeState(v); this.loaded = true; } }
     catch (e) {
       this.mode = 'localstorage';
-      try { const t = localStorage.getItem(LS_KEY); if (t) this.state = normalizeState(JSON.parse(t)); } catch (e2) { this.mode = 'memory'; this.lastError = String(e2); }
+      try { const t = localStorage.getItem(LS_KEY); if (t) { this.state = normalizeState(JSON.parse(t)); this.loaded = true; } } catch (e2) { this.mode = 'memory'; this.lastError = String(e2); }
     }
     try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch { /* ignore */ }
     return this.state;

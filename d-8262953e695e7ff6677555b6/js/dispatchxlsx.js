@@ -10,7 +10,7 @@ export function buildDispatchWorkbook(state, { includeFleet = true, includeRoste
   const ctx = buildContext({ settings: state.settings, fleet: state.fleet, roster: state.roster, trips: state.trips, now });
   const P = (id) => ctx.rosterById.get(id); const V = (k) => ctx.fleetByKey.get(k);
   const trips = [...state.trips].filter((t) => !tripIds || tripIds.includes(t.id)).sort((a, b) => (a.dateOut || '9999').localeCompare(b.dateOut || '9999') || (a.timeOut || '').localeCompare(b.timeOut || '') || (+a.chalk || 999) - (+b.chalk || 999) || (a.no || 0) - (b.no || 0));
-  const head = ['Trip #', 'Chalk', 'Status', 'Date out', 'Time out', 'Date back', 'Time back', 'Destination / mission', 'Vehicle', 'Platoon', 'LIN', 'VIN / Serial', 'Type', 'Driver', 'Driver GCSS-Army ID', 'Driver license no.', 'TC / A-driver', 'TC GCSS-Army ID', 'Pax', 'Towed / trailers', 'Dispatcher', 'PMCS done', 'GO / NO-GO', 'Why (first reason)', 'All reasons', 'Notes', 'Veh #', 'Trip GO / NO-GO'];
+  const head = ['Trip #', 'Chalk', 'Status', 'Date out', 'Time out', 'Date back', 'Time back', 'Destination / mission', 'Vehicle', 'Platoon', 'LIN', 'VIN / Serial', 'Type', 'Driver', 'Driver GCSS-Army ID', 'Driver license no.', 'TC / A-driver', 'TC GCSS-Army ID', 'Pax', 'Towed / trailers', 'Dispatcher', 'PMCS done', 'GO / NO-GO', 'Why (first reason)', 'All reasons', 'Notes', 'Veh #', 'Trip GO / NO-GO', 'Commander override'];
   const rows = [head];
   // one row per vehicle entry; the trip header (number, chalk, status, times, destination, dispatcher, notes) repeats on every row
   for (const t of trips) {
@@ -23,11 +23,11 @@ export function buildDispatchWorkbook(state, { includeFleet = true, includeRoste
       rows.push([t.no || '', t.chalk || '', t.status, cell(t.dateOut, 0, 'date'), t.timeOut || '', cell(t.dateBack, 0, 'date'), t.timeBack || '', t.dest || '', v ? (v.short || v.bumper) : e.vehicle || '', vw ? vw.platoon : '', vw ? vw.lin : '', vw ? vw.vin : '', vw ? vw.type : '',
         d ? personLabel(d) : e.driver || '', d ? d.gcssId || '' : '', d ? d.licNo || '' : '', c ? personLabel(c) : e.tc || '', c ? c.gcssId || '' : '',
         (e.pax || []).map((id) => (P(id) ? personLabel(P(id)) : id)).join('; '), (e.towed || []).map((k) => (V(k) ? V(k).short : k)).join('; '), t.dispatcher || '', e.pmcs ? 'Y' : 'N',
-        cell(res, rs), all[0] || '', all.join(' | '), t.notes || '', entries.length ? `${i + 1} of ${entries.length}` : '', cell(ev.result, tr)]);
+        cell(res, rs), all[0] || '', all.join(' | '), t.notes || '', entries.length ? `${i + 1} of ${entries.length}` : '', cell(ev.result, tr), e.override && e.override.by ? `Commander override: ${e.override.by} - ${e.override.reason}${e.override.at ? ' (' + String(e.override.at).slice(0, 16).replace('T', ' ') + ' UTC)' : ''}` : '']);
     });
   }
   // Column max widths (content decides the real width, long text wraps). Status column carries a dropdown with ALL options; the cell value is the trip's real status.
-  const sheets = [{ name: 'Dispatch Log', rows, autosize: true, cols: [7, 7, 11, 13, 8, 13, 8, 34, 11, 14, 9, 20, 22, 24, 16, 14, 24, 16, 34, 18, 18, 8, 10, 40, 60, 36, 8, 10], headerRow: 0,
+  const sheets = [{ name: 'Dispatch Log', rows, autosize: true, cols: [7, 7, 11, 13, 8, 13, 8, 34, 11, 14, 9, 20, 22, 24, 16, 14, 24, 16, 34, 18, 18, 8, 10, 40, 60, 36, 8, 10, 36], headerRow: 0,
     validations: [{ sqref: `C2:C${Math.max(rows.length, 2) + 300}`, list: TRIP_STATUSES, error: 'Use Planned, Out, Back or Cancelled' }] }];
   const c = fleetCounts(ctx); const gi = gcssIdStats(state.roster, state.settings);
   const asOf = asOfDate(state.settings, now);

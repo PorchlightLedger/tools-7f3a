@@ -7,7 +7,7 @@ import { vthumb } from '../photoui.js';
 import { tripFromChalk, chalkOffers } from '../chalk.js';
 import { openTripEditor } from './dispatch.js';
 import { todayISO } from '../util.js';
-import { tripEntries, evaluateTrip } from '../rules.js';
+import { tripEntries, evaluateTrip, tripOverrides, overrideMarker } from '../rules.js';
 
 let platoonFilter = 'all';
 export function renderChalk(root, rest, top) {
@@ -26,7 +26,7 @@ export function renderChalk(root, rest, top) {
     card.append(h('p', { class: 'chalk-counts', 'data-testid': 'chalk-counts' }, [`${c.counts.vehicles} vehicle${c.counts.vehicles === 1 ? '' : 's'}`, `${c.counts.drivers} driver${c.counts.drivers === 1 ? '' : 's'}`, `${c.counts.tcs} TC`, `${c.counts.pax} pax`, `${c.counts.people} people`].join(' · ')));
     // linkage: the trip(s) planned for this chalk, and a one-tap way to create a trip that carries ALL of the chalk's vehicles
     const dispatchable = c.items.filter((it) => it.vw.cls !== 'Towed').length;
-    for (const t of c.trips) { const ev = evaluateTrip(t, ctx); const off = chalkOffers(st, ctx, t); card.append(h('div', { class: 'chalk-trip', 'data-testid': 'chalk-trip', 'data-trip': t.no }, h('b', null, `Trip #${t.no} · ${t.status}`), ` · ${tripEntries(t).length} of ${dispatchable} vehicle${dispatchable === 1 ? '' : 's'} on the trip · ${t.dest || 'no destination'} `, h('span', { class: 'chip ' + (ev.result === 'NO-GO' ? 'nogo' : ev.result === 'WARN' ? 'warn' : 'go') }, ev.result), off.length ? h('span', { class: 'chip warn' }, `${off.length} not on trip`) : null, btn('Open trip', () => openTripEditor(t.id), 'small', { 'data-testid': 'chalk-open-trip' }))); }
+    for (const t of c.trips) { const ev = evaluateTrip(t, ctx); const off = chalkOffers(st, ctx, t); card.append(h('div', { class: 'chalk-trip', 'data-testid': 'chalk-trip', 'data-trip': t.no }, h('b', null, `Trip #${t.no} · ${t.status}`), ` · ${tripEntries(t).length} of ${dispatchable} vehicle${dispatchable === 1 ? '' : 's'} on the trip · ${t.dest || 'no destination'} `, h('span', { class: 'chip ' + (ev.result === 'NO-GO' ? 'nogo' : ev.result === 'WARN' ? 'warn' : 'go') }, ev.result), overrideMarker(tripOverrides(t)) ? h('span', { class: 'chip override', 'data-testid': 'trip-override' }, overrideMarker(tripOverrides(t))) : null, off.length ? h('span', { class: 'chip warn' }, `${off.length} not on trip`) : null, btn('Open trip', () => openTripEditor(t.id), 'small', { 'data-testid': 'chalk-open-trip' }))); }
     card.append(h('div', { class: 'row' }, btn(c.trips.length ? '＋ Another trip from this chalk' : '＋ Create trip from this chalk', () => { if (!c.items.length) { toast('Put vehicles on this chalk first.', 'bad'); return; } openTripEditor(null, { draft: tripFromChalk(st, getCtx(), c.n, { dateOut: todayISO(), dispatcher: st.settings.dispatcherDefault || '' }) }); }, 'small primary', { 'data-testid': 'chalk-new-trip' })));
     for (const it of c.items) card.append(vehRow(it, 'chalk-veh'));
     if (!c.items.length) card.append(h('p', { class: 'muted' }, 'Nothing here yet.'));

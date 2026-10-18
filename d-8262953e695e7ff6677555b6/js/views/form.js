@@ -2,7 +2,8 @@ import { S, getCtx, commit, go } from '../ctx.js';
 import { h, openSheet, toast, field, segmented, toggle, confirmBox, clear, pick, safeAppend } from '../dom.js';
 import { vehicleView, idLine } from '../rules.js';
 import { findByVin, suggestLin, headerFromVehicle, vinKey } from '../vin.js';
-import { thumbFor } from '../photoui.js';
+import { thumbFor, faultPhotoStrip, FAULT_PHOTO_HELP } from '../photoui.js';
+import { faultPhotoKeys, faultPhotoCount, removeFaultPhotos, getPhotoBlob } from '../photos.js';
 import { tmFor } from './tmedit.js';
 import { knownItems, modelKey } from '../tmdata.js';
 import { SYMBOLS, LEGACY_SYMBOL, INSPECTION_TYPES, READING_TYPES, newForm, newFault, newPart, buildFormPdf, validateForm, formFileName, formHasNMC, symbolText, CIRCLED_X_PREFIX, formUic } from '../form5988.js';
@@ -60,9 +61,16 @@ export function openFormEditorFor(key, link = {}) {
 }
 export function openFormEditor(id, isNew = false) {
   const st = S(); const f = st.forms.find((x) => x.id === id); if (!f) return; const original = JSON.stringify(f);
-  openSheet({ title: `5988-E · ${f.adminNumber || 'vehicle'}`, tall: true, onClose: () => { if (isNew && !f.faults.length && JSON.stringify(f) === original) { st.forms = st.forms.filter((x) => x.id !== f.id); } commit(); },
+  openSheet({ title: `5988-E · ${f.adminNumber || 'vehicle'}`, tall: true, onClose: () => { if (isNew && !f.faults.length && JSON.stringify(f) === original) { st.forms = st.forms.filter((x) => x.id !== f.id); removeFaultPhotos(f.id).catch(() => {}); } commit(); },
     build: (b, api) => {
       const body = safeAppend(h('div', { class: 'form' })); b.append(body);
+      let withPhotos = false; const pdfOpt = h('div', { class: 'pdf-opt', 'data-testid': 'form-pdf-opt' }); // "Include fault photos page": OFF every time the worksheet is opened
+      const photoCount = () => f.faults.reduce((n, x) => n + faultPhotoCount(f.id, x.id), 0);
+      const drawPdfOpt = () => {
+        const n = photoCount(); if (!n) withPhotos = false; clear(pdfOpt);
+        const cb = h('input', { type: 'checkbox', checked: withPhotos, disabled: !n, 'data-testid': 'form-pdf-photos', onChange: () => { withPhotos = cb.checked; } });
+        pdfOpt.append(h('label', { class: 'toggle' }, cb, h('span', { class: 'tl' }, 'Include fault photos page', h('small', { class: 'hint' }, n ? `Adds page(s) after the worksheet with the ${n} fault photo${n === 1 ? '' : 's'} and a caption (fault number and description). Off by default; the 5988-E page itself is not changed.` : 'No fault photos yet. Add photos on a fault line first.'))));
+      };
       const reg = {}; // inputs by field, so a VIN autofill can update them in place (no re-render: the keyboard stays up)
       const txt = (label, key, o = {}) => { const inp = h('input', { type: 'text', value: f[key] || '', autocomplete: 'off', autocapitalize: o.cap || 'characters', 'data-testid': 'F-' + key, onInput: (e) => { f[key] = e.target.value; f.updated = new Date().toISOString(); o.onInput && o.onInput(e.target.value); } }); reg[key] = inp; return field(label, inp, o.hint); };
       const setF = (key, val) => { f[key] = val; if (reg[key]) reg[key].value = val; };
@@ -113,7 +121,9 @@ export function openFormEditor(id, isNew = false) {
         body.append(symRow, h('details', { class: 'legend' }, h('summary', null, 'What the symbols mean'), h('ul', null, SYMBOLS.map((s) => h('li', null, s.short)), h('li', null, 'Circled TM item number = the fault is in the TM "equipment not ready/available" (NMC) column.'), h('li', null, 'Last-name initial = satisfactory / corrected.'))));
         const sorted = sortFaults(f.faults);
         if (!sorted.length) body.append(h('p', { class: 'muted' }, 'No faults yet.'));
-        sorted.forEach((x) => body.append(h('button', { type: 'button', class: 'faultrow', 'data-testid': 'fault-row', onClick: () => openFaultSheet(f, x, x.symbol, draw) }, h('span', { class: 'fnum' + (x.circleItem ? ' circ' : '') }, String(x.item).padStart(4, '0')), h('span', { class: 'fsym s-' + (x.symbol === '-' ? 'dash' : x.symbol === '/' ? 'diag' : x.symbol === 'CX' ? 'cx' : 'x') }, symbolText(x.symbol)), h('span', { class: 'fdesc' }, x.desc || '(no description)', x.action ? h('small', null, 'Action: ' + x.action) : null))));
+        sorted.forEach((x) => body.append(h('div', { class: 'fault-line', 'data-testid': 'fault-line', 'data-fault': x.id }, h('button', { type: 'button', class: 'faultrow', 'data-testid': 'fault-row', onClick: () => openFaultSheet(f, x, x.symbol, draw) }, h('span', { class: 'fnum' + (x.circleItem ? ' circ' : '') }, String(x.item).padStart(4, '0')), h('span', { class: 'fsym s-' + (x.symbol === '-' ? 'dash' : x.symbol === '/' ? 'diag' : x.symbol === 'CX' ? 'cx' : 'x') }, symbolText(x.symbol)), h('span', { class: 'fdesc' }, x.desc || '(no description)', x.action ? h('small', null, 'Action: ' + x.action) : null)), faultPhotoStrip(f, x, { onChange: drawPdfOpt }))));
+        if (sorted.length) body.append(h('p', { class: 'hint', 'data-testid': 'fault-photo-help' }, FAULT_PHOTO_HELP), pdfOpt);
+        drawPdfOpt();
         body.append(h('h3', null, 'Parts required (optional)'));
         f.parts.forEach((p, i) => body.append(h('button', { type: 'button', class: 'faultrow', onClick: () => openPartSheet(f, p, draw) }, h('span', { class: 'fnum' }, p.fault || '—'), h('span', { class: 'fdesc' }, `${p.noun || p.niin || 'part'} · ${p.doc || 'no doc #'}`))));
         body.append(btn('+ Add part line', () => openPartSheet(f, null, draw), 'small'));
@@ -121,15 +131,24 @@ export function openFormEditor(id, isNew = false) {
       };
       draw(); updLinHint();
       api.foot.append(
-        h('button', { class: 'btn danger', type: 'button', 'data-testid': 'form-delete', onClick: async () => { if (await confirmBox({ title: 'Delete worksheet?', message: 'This removes the saved worksheet from the app.', okText: 'Delete', danger: true })) { st.forms = st.forms.filter((x) => x.id !== f.id); isNew = false; commit(); api.close(); } } }, 'Delete'),
+        h('button', { class: 'btn danger', type: 'button', 'data-testid': 'form-delete', onClick: async () => { const np = photoCount(); if (await confirmBox({ title: 'Delete worksheet?', message: 'This removes the saved worksheet from the app.' + (np ? ` Its ${np} fault photo${np === 1 ? '' : 's'} will be deleted too.` : ''), okText: 'Delete', danger: true })) { st.forms = st.forms.filter((x) => x.id !== f.id); isNew = false; commit(); await removeFaultPhotos(f.id); api.close(); } } }, 'Delete'),
         h('button', { class: 'btn', type: 'button', 'data-testid': 'form-save', onClick: () => { f.updated = new Date().toISOString(); commit(); toast('Worksheet saved'); } }, 'Save'),
         h('button', { class: 'btn primary', type: 'button', 'data-testid': 'form-pdf', onClick: async () => {
           f.updated = new Date().toISOString(); commit({ render: false });
-          try { const bytes = buildFormPdf(f, { unitName: st.settings.unitName, uic: formUic(f, st.settings) }); const r = await shareOrDownload(bytes, formFileName(f), 'application/pdf', { title: `DA Form 5988-E worksheet ${f.adminNumber || ''}`, text: 'Worksheet aid - not an official form.' });
-            if (r.method === 'download') toast('PDF saved to Downloads / Files'); else if (r.method === 'share') toast('Shared'); window.__lastPdf = { size: bytes.length, name: formFileName(f), method: r.method };
+          try { const faultPhotos = withPhotos ? await collectFaultPhotos(f) : null; const bytes = buildFormPdf(f, { unitName: st.settings.unitName, uic: formUic(f, st.settings), faultPhotos }); const r = await shareOrDownload(bytes, formFileName(f), 'application/pdf', { title: `DA Form 5988-E worksheet ${f.adminNumber || ''}`, text: 'Worksheet aid - not an official form.' });
+            if (r.method === 'download') toast('PDF saved to Downloads / Files'); else if (r.method === 'share') toast('Shared'); window.__lastPdf = { size: bytes.length, name: formFileName(f), method: r.method, faultPhotos: faultPhotos ? faultPhotos.reduce((n, g) => n + g.images.length, 0) : 0 };
           } catch (e) { console.error(e); toast('Could not make the PDF: ' + e.message, 'bad'); }
         } }, 'Make PDF / share'));
     } });
+}
+/** the photos of each fault, in print order, as JPEG bytes: [{fault, images:[Uint8Array]}] */
+async function collectFaultPhotos(form) {
+  const out = [];
+  for (const fault of sortFaults(form.faults)) {
+    const images = []; for (const k of faultPhotoKeys(form.id, fault.id)) { try { const b = await getPhotoBlob(k, 'full'); if (b) images.push(new Uint8Array(await b.arrayBuffer())); } catch { /* skip an unreadable photo */ } }
+    if (images.length) out.push({ fault, images });
+  }
+  return out;
 }
 function openFaultSheet(form, fault, symbol, done) {
   const st = S(); const isNew = !fault; const d = fault ? JSON.parse(JSON.stringify(fault)) : newFault(form, symbol);
@@ -153,7 +172,7 @@ function openFaultSheet(form, fault, symbol, done) {
       body.append(field('Corrective action', h('textarea', { rows: 2, value: d.action || '', 'data-testid': 'fl-action', onInput: (e) => { d.action = e.target.value; } })), h('div', { class: 'grid2' }, field('Oper hrs', h('input', { type: 'text', inputmode: 'decimal', value: d.hrs || '', onInput: (e) => { d.hrs = e.target.value; } })), field('LIC #', h('input', { type: 'text', value: d.lic || '', autocapitalize: 'characters', onInput: (e) => { d.lic = e.target.value; } }))));
     };
     draw();
-    api.foot.append(!isNew ? h('button', { class: 'btn danger', type: 'button', onClick: () => { form.faults = form.faults.filter((x) => x.id !== d.id); form.updated = new Date().toISOString(); commit({ render: false }); api.close(); done(); } }, 'Delete') : null, h('button', { class: 'btn', type: 'button', onClick: () => api.close() }, 'Cancel'),
+    api.foot.append(!isNew ? h('button', { class: 'btn danger', type: 'button', 'data-testid': 'fl-delete', onClick: async () => { const np = faultPhotoCount(form.id, d.id); if (np && !(await confirmBox({ title: 'Delete fault?', message: `This fault and its ${np} photo${np === 1 ? '' : 's'} will be deleted.`, okText: 'Delete', danger: true }))) return; form.faults = form.faults.filter((x) => x.id !== d.id); form.updated = new Date().toISOString(); commit({ render: false }); await removeFaultPhotos(form.id, d.id); api.close(); done(); } }, 'Delete') : null, h('button', { class: 'btn', type: 'button', onClick: () => api.close() }, 'Cancel'),
       h('button', { class: 'btn primary', type: 'button', 'data-testid': 'fl-save', onClick: () => {
         if (!d.item) { toast('Item number needed.', 'bad'); return; }
         if (isNew) form.faults.push(d); else Object.assign(fault, d); form.updated = new Date().toISOString(); commit({ render: false }); api.close(); done();

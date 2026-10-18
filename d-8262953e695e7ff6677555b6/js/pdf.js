@@ -13,9 +13,30 @@ function pdfStr(s) {
   return '(' + o + ')';
 }
 const f2 = (n) => (Math.round(n * 100) / 100).toString();
+/** width / height of a baseline or progressive JPEG (reads the SOFn marker); null when the bytes are not a readable JPEG */
+export function jpegSize(b) {
+  if (!b || b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 9 < b.length) {
+    if (b[i] !== 0xff) { i++; continue; }
+    const m = b[i + 1]; if (m === 0xff) { i++; continue; }
+    if (m === 0xd8 || m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { i += 2; continue; }
+    const len = (b[i + 2] << 8) | b[i + 3];
+    if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { h: (b[i + 5] << 8) | b[i + 6], w: (b[i + 7] << 8) | b[i + 8], comps: b[i + 9] };
+    i += 2 + len;
+  }
+  return null;
+}
 export class PdfDoc {
-  constructor({ width = 612, height = 792, title = 'Document' } = {}) { this.W = width; this.H = height; this.title = title; this.pages = []; this.cur = null; this.addPage(); }
-  addPage() { this.cur = []; this.pages.push(this.cur); return this; }
+  constructor({ width = 612, height = 792, title = 'Document' } = {}) { this.W = width; this.H = height; this.title = title; this.pages = []; this.pageImgs = []; this.images = []; this.cur = null; this.addPage(); }
+  addPage() { this.cur = []; this.pages.push(this.cur); this.pageImgs.push(new Set()); return this; }
+  /** draw a JPEG (Uint8Array) into the box x, y (top-left, from the page top), w x h points. Returns false when the bytes are not a JPEG this writer can embed. */
+  image(x, y, w, h, jpeg) {
+    const dim = jpegSize(jpeg); if (!dim || ![1, 3].includes(dim.comps)) return false;
+    let idx = this.images.findIndex((im) => im.bytes === jpeg); if (idx < 0) { this.images.push({ bytes: jpeg, w: dim.w, h: dim.h, comps: dim.comps }); idx = this.images.length - 1; }
+    this.pageImgs[this.pages.length - 1].add(idx);
+    this.cur.push(`q ${f2(w)} 0 0 ${f2(h)} ${f2(x)} ${f2(this.H - y - h)} cm /Im${idx + 1} Do Q`); return true;
+  }
   // y is measured from the TOP of the page (more natural for forms)
   text(x, y, str, { font = 'courier', size = 9, color = null } = {}) {
     const f = FONTS[font] || 'F1'; const col = color ? `${color.map(f2).join(' ')} rg ` : '0 g ';
@@ -36,11 +57,15 @@ export class PdfDoc {
     const objs = []; const add = (s) => { objs.push(s); return objs.length; };
     const catalog = add(''), pages = add('');
     const fontIds = {}; for (const k of Object.keys(BASE)) fontIds[k] = add(`<< /Type /Font /Subtype /Type1 /BaseFont /${BASE[k]} /Encoding /WinAnsiEncoding >>`);
-    const res = `<< /Font << ${Object.keys(BASE).map((k) => `/${k} ${fontIds[k]} 0 R`).join(' ')} >> >>`;
+    const fontRes = `/Font << ${Object.keys(BASE).map((k) => `/${k} ${fontIds[k]} 0 R`).join(' ')} >>`;
+    const res = `<< ${fontRes} >>`;
+    const imgIds = this.images.map((im) => { let bin = ''; for (let i = 0; i < im.bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, im.bytes.subarray(i, i + 0x8000));
+      return add(`<< /Type /XObject /Subtype /Image /Width ${im.w} /Height ${im.h} /ColorSpace /${im.comps === 1 ? 'DeviceGray' : 'DeviceRGB'} /BitsPerComponent 8 /Filter /DCTDecode /Length ${bin.length} >>\nstream\n${bin}\nendstream`); });
     const kids = [];
-    this.pages.forEach((ops) => {
+    this.pages.forEach((ops, pi) => {
       const content = ops.join('\n'); const cid = add(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
-      kids.push(add(`<< /Type /Page /Parent ${pages} 0 R /MediaBox [0 0 ${this.W} ${this.H}] /Resources ${res} /Contents ${cid} 0 R >>`));
+      const used = [...this.pageImgs[pi]]; const pres = used.length ? `<< ${fontRes} /XObject << ${used.map((i) => `/Im${i + 1} ${imgIds[i]} 0 R`).join(' ')} >> >>` : res;
+      kids.push(add(`<< /Type /Page /Parent ${pages} 0 R /MediaBox [0 0 ${this.W} ${this.H}] /Resources ${pres} /Contents ${cid} 0 R >>`));
     });
     const info = add(`<< /Title ${pdfStr(this.title)} /Producer (Dispatch app offline PDF writer) /Creator (Dispatch app) >>`);
     objs[catalog - 1] = `<< /Type /Catalog /Pages ${pages} 0 R >>`;
