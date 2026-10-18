@@ -3,7 +3,7 @@ import { buildXlsx, ST } from './xlsxwrite.js';
 import { tripEntries, buildContext, evaluateTrip, vehicleView, fleetCounts, pct, personName, personLabel, tripSummaryMessage, allQualNames, isActivePerson, gcssIdStats, licenseState, asOfDate, hasQual, TRIP_STATUSES } from './rules.js';
 import { chalkSummary, chalkLabel, chalkOf } from './chalk.js';
 import { resolveTm, TM_NOT_FOUND } from './tmdata.js';
-import { fmtDate, normKeyText, parseDateLoose } from './util.js';
+import { fmtDate, normKeyText, parseDateLoose, localStamp } from './util.js';
 
 const cell = (v, s, type) => (v === '' || v == null ? '' : { v, s, type });
 export function buildDispatchWorkbook(state, { includeFleet = true, includeRoster = false, now = new Date(), tripIds = null } = {}) {
@@ -23,7 +23,7 @@ export function buildDispatchWorkbook(state, { includeFleet = true, includeRoste
       rows.push([t.no || '', t.chalk || '', t.status, cell(t.dateOut, 0, 'date'), t.timeOut || '', cell(t.dateBack, 0, 'date'), t.timeBack || '', t.dest || '', v ? (v.short || v.bumper) : e.vehicle || '', vw ? vw.platoon : '', vw ? vw.lin : '', vw ? vw.vin : '', vw ? vw.type : '',
         d ? personLabel(d) : e.driver || '', d ? d.gcssId || '' : '', d ? d.licNo || '' : '', c ? personLabel(c) : e.tc || '', c ? c.gcssId || '' : '',
         (e.pax || []).map((id) => (P(id) ? personLabel(P(id)) : id)).join('; '), (e.towed || []).map((k) => (V(k) ? V(k).short : k)).join('; '), t.dispatcher || '', e.pmcs ? 'Y' : 'N',
-        cell(res, rs), all[0] || '', all.join(' | '), t.notes || '', entries.length ? `${i + 1} of ${entries.length}` : '', cell(ev.result, tr), e.override && e.override.by ? `Commander override: ${e.override.by} - ${e.override.reason}${e.override.at ? ' (' + String(e.override.at).slice(0, 16).replace('T', ' ') + ' UTC)' : ''}` : '']);
+        cell(res, rs), all[0] || '', all.join(' | '), t.notes || '', entries.length ? `${i + 1} of ${entries.length}` : '', cell(ev.result, tr), [e.override && e.override.by ? `Commander override: ${e.override.by} - ${e.override.reason}${e.override.at ? ' (' + localStamp(e.override.at) + ')' : ''}` : '', ...(Array.isArray(e.overrideLog) ? e.overrideLog : []).map((r) => `Override removed: ${r.by} - ${r.reason}${r.at ? ' (given ' + localStamp(r.at) + ')' : ''}${r.removedAt ? ' (removed ' + localStamp(r.removedAt) + ')' : ''}`)].filter(Boolean).join(' | ')]);
     });
   }
   // Column max widths (content decides the real width, long text wraps). Status column carries a dropdown with ALL options; the cell value is the trip's real status.

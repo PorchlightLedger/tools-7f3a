@@ -385,6 +385,11 @@ const reasonKey = (r) => `${r.code}|${r.raw || r.msg}`;
 const oneLine = (x, max) => String(x == null ? '' : x).replace(/\s+/g, ' ').trim().slice(0, max);
 /** drop a malformed override (odd imports / hand-edited backups) and trim the rest in place */
 export function cleanOverride(e) {
+  if (e && e.overrideLog !== undefined) {
+    const log = (Array.isArray(e.overrideLog) ? e.overrideLog : []).filter((r) => r && typeof r === 'object' && oneLine(r.by, OVERRIDE_NAME_MAX))
+      .map((r) => ({ by: oneLine(r.by, OVERRIDE_NAME_MAX), reason: oneLine(r.reason, OVERRIDE_REASON_MAX), at: typeof r.at === 'string' ? r.at : '', removedAt: typeof r.removedAt === 'string' ? r.removedAt : '' })).slice(-10);
+    if (log.length) e.overrideLog = log; else delete e.overrideLog;
+  }
   const o = e && e.override; if (o === undefined) return e;
   const ok = o && typeof o === 'object' && !Array.isArray(o) && oneLine(o.by, OVERRIDE_NAME_MAX) && oneLine(o.reason, OVERRIDE_REASON_MAX);
   if (!ok) { delete e.override; return e; }
@@ -424,7 +429,14 @@ export function applyOverride(entry, er, { by, reason, now = new Date() } = {}) 
   return { ok: true, override: entry.override, error: '' };
 }
 /** undo: remove the override from the entry. Returns true when there was one. */
-export function removeOverride(entry) { if (entry && entry.override) { delete entry.override; return true; } return false; }
+export const OVERRIDE_LOG_MAX = 10;
+export function removeOverride(entry, now = new Date()) {
+  if (!(entry && entry.override)) return false;
+  // keep a record that an override was given and later removed (audit trail), newest last, capped
+  const log = Array.isArray(entry.overrideLog) ? entry.overrideLog : [];
+  log.push({ by: entry.override.by, reason: entry.override.reason, at: entry.override.at || '', removedAt: now.toISOString() });
+  entry.overrideLog = log.slice(-OVERRIDE_LOG_MAX); delete entry.override; return true;
+}
 /** every override on a trip, with the vehicle label: [{entry, vehicle, by, reason, at, reasons}] */
 export function tripOverrides(t) { return tripEntries(t).filter((e) => e.override && e.override.by).map((e) => ({ entry: e, vehicle: e.vehicle, ...e.override })); }
 /** "Commander override: NAME" (distinct names, in trip order) or '' */

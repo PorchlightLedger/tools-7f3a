@@ -104,3 +104,6 @@ export function compareItems(a, b) {
 }
 /** Stable sort of faults by TM item number (does not mutate). */
 export function sortFaults(faults) { return faults.map((f, i) => [f, i]).sort((p, q) => compareItems(p[0].item, q[0].item) || p[1] - q[1]).map((p) => p[0]); }
+
+/** local date + time of an ISO timestamp, 'YYYY-MM-DD HH:MM' in the device's own time zone ('' when not a time) */
+export function localStamp(iso) { const d = new Date(iso); if (!iso || Number.isNaN(d.getTime())) return ''; const p = (n) => String(n).padStart(2, '0'); return `${todayISO(d)} ${p(d.getHours())}:${p(d.getMinutes())}`; }
