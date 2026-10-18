@@ -1,5 +1,5 @@
 // Persistence: IndexedDB (preferred) with localStorage fallback. Everything stays on this device.
-import { defaultSettings, migrateTrip } from './rules.js';
+import { defaultSettings, migrateTrip, relabelLegacyType2 } from './rules.js';
 import { uid } from './util.js';
 
 // schema 2: trips = header + entries[] (one per vehicle); fleet vehicles / trips / entries / forms carry stable unique ids (vid / id) so records can be matched when shared between phones later.
@@ -31,6 +31,8 @@ export function normalizeState(raw) {
   s.settings = { ...base.settings, ...(raw && raw.settings ? raw.settings : {}) };
   for (const k of ['roster', 'fleet', 'trips', 'forms', 'presets']) if (!Array.isArray(s[k])) s[k] = base[k];
   if (!Array.isArray(s.settings.modelMap) || !s.settings.modelMap.length) s.settings.modelMap = base.settings.modelMap;
+  if (!s.tmByType || typeof s.tmByType !== 'object') s.tmByType = {};
+  s.settings.modelMap = s.settings.modelMap.map((m) => (m && typeof m === 'object' ? { ...m } : m)); s.tmByType = { ...s.tmByType }; relabelLegacyType2(s.settings, s.tmByType); // TYPE II label fix: D7 -> D6 (copies, so the caller's object is not mutated)
   if (!Array.isArray(s.settings.statuses) || !s.settings.statuses.length) s.settings.statuses = base.settings.statuses;
   if (!Array.isArray(s.settings.prefixes)) s.settings.prefixes = base.settings.prefixes;
   if (!Array.isArray(s.settings.turnedIn)) s.settings.turnedIn = base.settings.turnedIn;

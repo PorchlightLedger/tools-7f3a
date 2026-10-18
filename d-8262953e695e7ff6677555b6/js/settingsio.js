@@ -1,6 +1,6 @@
 // Export / import of SETTINGS ONLY (no roster, fleet, trips or forms). Lets a unit load its UIC and platoon rules from a small JSON file
 // instead of baking them into the public app.
-import { defaultSettings, compilePlatoonRule } from './rules.js';
+import { defaultSettings, compilePlatoonRule, relabelLegacyType2 } from './rules.js';
 import { clean } from './util.js';
 import { modelPhotoKey, dataUrlToBlob, setModelPhotoBlob, hasPhoto } from './photos.js';
 
@@ -71,6 +71,7 @@ export async function applyModelPhotos(parsed) {
 export function applySettings(st, parsed) {
   const changed = []; for (const [k, v] of Object.entries(parsed.patch)) { if (JSON.stringify(st.settings[k]) !== JSON.stringify(v)) changed.push(k); st.settings[k] = v; }
   if (parsed.tmByModel) { for (const [k, v] of Object.entries(parsed.tmByModel)) st.tmByModel[k] = v; if (Object.keys(parsed.tmByModel).length) changed.push('tmByModel'); }
+  relabelLegacyType2(st.settings, st.tmByType); // an older settings file may still carry the old TYPE II type name
   return changed;
 }
 export const settingsFileName = () => 'dispatch_settings.json';

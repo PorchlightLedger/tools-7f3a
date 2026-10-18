@@ -19,7 +19,7 @@ export const DEFAULT_MODEL_MAP = [
   ['M1088A1', 'Tractor Truck (M1088)', 'Tractor Truck (M1088)', 'Vehicle'],
   ['M983A4LET', 'HEMTT LET (M983)', 'HEMTT LET (M983)', 'Vehicle'],
   ['TP I HMEE-I', 'HMEE', 'HMEE', 'Vehicle'],
-  ['924HLTLDR', '924H Loader', '924H Loader', 'Vehicle'], ['TYPE II', 'D7 Dozer', 'D7 Dozer', 'Vehicle'], ['120M', '120M Grader', '120M Grader', 'Vehicle'],
+  ['924HLTLDR', '924H Loader', '924H Loader', 'Vehicle'], ['TYPE II', 'D6 Dozer', 'D7 Dozer', 'Vehicle'], ['120M', '120M Grader', '120M Grader', 'Vehicle'],
   ['M400W', 'Skid Steer (M400W)', 'Skid Steer (M400W)', 'Vehicle'], ['DV100', 'DEUCE (DV100)', 'DEUCE (DV100)', 'Vehicle'],
   ['M870A3', 'Low Boy TRL (M870)', 'Low Boy TRL (M870)', 'Towed'], ['M1101', 'Cargo TRL (M1101)', 'Cargo TRL (M1101)', 'Towed'],
   ['M1095', 'Flatbed TRL (M1095)', 'Flatbed TRL (M1095)', 'Towed'], ['M149A2', 'Water Buffalo (M149)', 'Water Buffalo (M149)', 'Towed'],
@@ -126,6 +126,16 @@ export function vehIds(v) { return { vin: clean(v.vinSet) || clean(v.serial), li
 export const idLine = (v) => { const { vin, lin } = vehIds(v); return [lin ? `LIN ${lin}` : '', vin ? `VIN/Serial ${vin}` : ''].filter(Boolean).join(' · '); };
 
 // ---------- model map ----------
+// TYPE II is a D6 (the unit has no D7). Data saved on a device before that fix still carries the old built-in type NAME; relabel it on load / import.
+// Only the type name of the TYPE II row is touched, and only when it still holds the old built-in text (a name the user typed is kept). The qualification column name is not changed.
+export const LEGACY_TYPE2_TYPE = 'D7 Dozer', TYPE2_TYPE = 'D6 Dozer';
+export function relabelLegacyType2(settings, tmByType) {
+  let n = 0;
+  for (const r of (settings && Array.isArray(settings.modelMap) ? settings.modelMap : [])) if (r && typeof r === 'object' && clean(r.model).toUpperCase() === 'TYPE II' && r.type === LEGACY_TYPE2_TYPE) { r.type = TYPE2_TYPE; n++; }
+  // legacy "remembered TMs" are keyed by type name: carry them over so they keep resolving
+  if (n && tmByType && typeof tmByType === 'object' && LEGACY_TYPE2_TYPE in tmByType) { if (!(TYPE2_TYPE in tmByType)) tmByType[TYPE2_TYPE] = tmByType[LEGACY_TYPE2_TYPE]; delete tmByType[LEGACY_TYPE2_TYPE]; }
+  return n;
+}
 export function modelLookup(settings) {
   const m = new Map(); for (const r of settings.modelMap || []) { const k = clean(r.model).toUpperCase(); if (k && !m.has(k)) m.set(k, r); } return m;
 }
