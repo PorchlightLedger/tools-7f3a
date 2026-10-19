@@ -14,6 +14,7 @@ import { renderWalk } from './walk.js';
 import { renderForms, openPresetEditor } from './form.js';
 import { renderChalk } from './chalk.js';
 import { renderReports } from './reports.js';
+import { renderFeedback } from './feedback.js';
 import { btn, piiNote } from '../ui.js';
 import { clean } from '../util.js';
 
@@ -22,6 +23,7 @@ export function renderMore(root, rest, top) {
   if (rest[0] === 'forms') return renderForms(root, rest, top);
   if (rest[0] === 'chalk') return renderChalk(root, rest, top);
   if (rest[0] === 'reports') return renderReports(root, rest, top);
+  if (rest[0] === 'feedback') return renderFeedback(root, rest, top);
   if (rest[0] === 'settings') { setTimeout(() => { history.replaceState(null, '', '#more'); openSettings(); }, 0); }
   if (rest[0] === 'backup') { setTimeout(() => { history.replaceState(null, '', '#more'); openBackup(); }, 0); }
   const item = (title, sub, onClick, testid) => h('button', { type: 'button', class: 'menu-item', onClick, 'data-testid': testid }, h('span', null, h('b', null, title), h('small', null, sub)), h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'));
@@ -34,6 +36,7 @@ export function renderMore(root, rest, top) {
       item('Share dispatch spreadsheet', 'Build the .xlsx on this phone and send it', () => openExportSheet(), 'menu-export'),
       item('Settings', 'Email recipient, rules, type map, lists', () => openSettings(), 'menu-settings'),
       item('Backup, restore & wipe', 'JSON backup via share sheet; wipe all data', () => openBackup(), 'menu-backup'),
+      item('Send feedback', 'Report a bug or suggest an improvement (opens an email draft)', () => go('#more/feedback'), 'menu-feedback'),
       item('About, privacy & help', `Version ${APP_VERSION} · works offline`, () => openHelp(), 'menu-help')),
     h('p', { class: 'hint', 'data-testid': 'more-privacy' }, PRIVACY_NOTE));
   return 'More';
@@ -154,6 +157,7 @@ export function openHelp() {
         h('li', null, 'Busy: a vehicle or person is busy from the date out through the date back. Trips on different days do not collide; trips that share a day do (times are used when both have them). An Out trip is busy until it is set Back, and shows "Not back: past due" after its return date.'),
         h('li', { 'data-testid': 'help-override-rules' }, 'Commander override records an approval for a NO-GO vehicle, this crew and these reasons (change the driver, TC, passengers or trailers and it no longer covers). It can NOT waive an expired / missing driver license, an X (deadlined) or turned-in vehicle or towed item, or a data error: a commander cannot waive a license requirement or dispatch a deadlined or turned-in vehicle. It CAN waive a license that expires before the trip ends, and an NMCM / NMCS towed item.')),
       h('h3', null, 'Reports'), h('p', { 'data-testid': 'help-reports' }, 'More > Reports shows the Slant report: Equipment, On-hand (everything on the books, including X and turned-in vehicles) and NMC (NMCM + NMCS + every vehicle ending in digit + X, counted once). Send opens the share sheet (pick Messages or Mail and the recipient there); Email draft asks for an address each time. Nothing is saved. The unit line at the top of the report (and in the email subject) is your Unit name from Settings; set it once.'),
+      h('h3', null, 'Send feedback'), h('p', { 'data-testid': 'help-feedback' }, 'More > Send feedback: pick Bug, Recommendation or Feature request, type your note (and your name / rank if you like) and tap Send feedback. Your email app opens a draft to the developer with the app build and the date; you send it. Nothing is saved in the app. Keep names, bumper numbers and roster data out of it.'),
       h('h3', null, 'Install on iPhone'), h('p', null, 'Safari > Share > Add to Home Screen. After the first load it works offline.'),
       h('p', { 'data-testid': 'help-install-first' }, h('b', null, 'Install to the Home Screen first, then import. '), 'Data you enter in a Safari tab does not carry into the installed app: they are separate storage. Open the installed app and import (or restore a backup) there.'),
       h('h3', null, 'Version'), ver,
