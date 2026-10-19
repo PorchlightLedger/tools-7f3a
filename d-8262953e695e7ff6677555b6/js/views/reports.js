@@ -3,7 +3,7 @@ import { h, openSheet, toast, field, clear } from '../dom.js';
 import { asOfBar } from '../banners.js';
 import { mailtoLink } from '../backup.js';
 import { btn } from '../ui.js';
-import { SLANT_HEADER, slantReport, slantText, slantDate, slantAsOf, slantSubject } from '../slant.js';
+import { slantHeader, slantReport, slantText, slantDate, slantAsOf, slantSubject } from '../slant.js';
 
 /** loose address check: empty is fine (draft with no recipient); otherwise one address like a@b */
 export const looseEmailOk = (s) => { const t = String(s || '').trim(); return !t || /^[^\s@,;<>]+@[^\s@,;<>]+$/.test(t); };
@@ -16,7 +16,7 @@ async function copyText(text) {
 
 export function renderReports(root, rest, top) {
   const st = S(); top.append(btn('‹ More', () => go('#more'), 'small'));
-  const iso = slantAsOf(st.settings); const rep = slantReport(st.fleet, st.settings); const text = slantText(rep, iso); const subject = slantSubject(iso);
+  const iso = slantAsOf(st.settings); const rep = slantReport(st.fleet, st.settings); const unit = slantHeader(st.settings); const text = slantText(rep, iso, unit); const subject = slantSubject(iso, unit);
   const send = async () => {
     if (typeof navigator.share === 'function') {
       try { await navigator.share({ title: subject, text }); return; }
@@ -31,7 +31,7 @@ export function renderReports(root, rest, top) {
       h('td', { class: 'num', 'data-col': 'nmc' }, String(r.nmc), r.x ? h('small', { class: 'xnote', 'data-testid': 'slant-x' }, `incl. ${r.x} X`) : null)))));
   root.append(asOfBar(),
     h('div', { class: 'row slant-actions' }, btn('Send', send, 'primary', { 'data-testid': 'slant-send' }), btn('Email draft', () => openEmailDraft(subject, text), '', { 'data-testid': 'slant-email' }), btn('Copy', copy, '', { 'data-testid': 'slant-copy' })),
-    h('div', { class: 'card slant-card' }, h('h2', { class: 'slant-title', 'data-testid': 'slant-header' }, SLANT_HEADER), h('p', { class: 'slant-date', 'data-testid': 'slant-date' }, `Slant report - ${slantDate(iso)}`), table));
+    h('div', { class: 'card slant-card' }, unit ? h('h2', { class: 'slant-title', 'data-testid': 'slant-header' }, unit) : h('p', { class: 'hint slant-unit-hint', 'data-testid': 'slant-unit-hint' }, 'Set your unit name in More > Settings.'), h('p', { class: 'slant-date', 'data-testid': 'slant-date' }, `Slant report - ${slantDate(iso)}`), table));
   return 'Reports';
 }
 

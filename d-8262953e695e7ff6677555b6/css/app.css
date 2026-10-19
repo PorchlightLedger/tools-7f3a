@@ -148,7 +148,7 @@ input.from-file { border: 2px solid var(--orange); background: var(--orange-bg);
 .banner .btn { min-height: 44px; }
 /* Reports: Slant table (3 columns) */
 .slant-card { padding: 12px 8px; }
-.slant-title { font-size: 19px; margin: 2px 6px 0; } .slant-date { margin: 2px 6px 10px; color: var(--muted); font-size: 14px; }
+.slant-title { font-size: 19px; margin: 2px 6px 0; } .slant-unit-hint { margin: 2px 6px 0; } .slant-date { margin: 2px 6px 10px; color: var(--muted); font-size: 14px; }
 table.slant { width: 100%; border-collapse: collapse; font-size: 16px; font-variant-numeric: tabular-nums; }
 table.slant th, table.slant td { padding: 9px 6px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; }
 table.slant thead th { border-top: 0; border-bottom: 2px solid var(--line); font-size: 13px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }

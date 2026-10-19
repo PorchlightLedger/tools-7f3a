@@ -2,7 +2,9 @@
 import { vehicleStatus, isXBumper, asOfDate } from './rules.js';
 import { clean } from './util.js';
 
-export const SLANT_HEADER = '753rd BEB, Alpha Company';
+/** the unit line comes from the user's own Settings > Unit name (never baked into the app). '' when not set.
+ *  Trimmed; line breaks / tabs (only possible through an imported settings file) become a space so the first line of the text and the mail subject stay one line. */
+export const slantHeader = (settings) => clean(settings && settings.unitName).replace(/[\r\n\t]+/g, ' ').trim();
 
 /** EDIT HERE. One entry per slant row, in print order.
  *  models: GCSS "Model number" keys (case-insensitive, exact). A vehicle whose model is listed here is counted in that row.
@@ -60,11 +62,13 @@ const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct
 /** "2026-10-18" -> "Oct 18, 2026" */
 export function slantDate(iso) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? `${MON[+m[2] - 1]} ${+m[3]}, ${m[1]}` : String(iso || ''); }
 export const slantAsOf = (settings, now = new Date()) => asOfDate(settings, now);
-export const slantSubject = (iso) => `Slant report, 753rd BEB Alpha Company - ${slantDate(iso)}`;
+/** `Slant report, <unit name> - <date>`; without a unit name `Slant report - <date>` */
+export const slantSubject = (iso, unitName = '') => { const u = slantHeader({ unitName }); return `${u ? `Slant report, ${u}` : 'Slant report'} - ${slantDate(iso)}`; };
 
-/** the plain-text table that is shared / copied / mailed: header, date line, blank line, then exactly the 3-column table */
-export function slantText(report, iso) {
+/** the plain-text table that is shared / copied / mailed: unit line (only when a unit name is set), date line, blank line, then exactly the 3-column table */
+export function slantText(report, iso, unitName = '') {
   const rows = report.rows; const w = Math.max('Equipment'.length, ...rows.map((r) => r.label.length));
   const line = (a, b, c) => `${a.padEnd(w)}  ${String(b).padStart(7)}  ${String(c).padStart(3)}`;
-  return [SLANT_HEADER, `Slant report - ${slantDate(iso)}`, '', line('Equipment', 'On-hand', 'NMC'), ...rows.map((r) => line(r.label, r.onHand, r.nmc))].join('\n');
+  const unit = slantHeader({ unitName });
+  return [...(unit ? [unit] : []), `Slant report - ${slantDate(iso)}`, '', line('Equipment', 'On-hand', 'NMC'), ...rows.map((r) => line(r.label, r.onHand, r.nmc))].join('\n');
 }
